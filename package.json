@@ -1,0 +1,38 @@
+{
+  "name": "opencode-voz",
+  "version": "0.1.0",
+  "description": "Plugin de voz para OpenCode Desktop en macOS: lectura en streaming (TTS) y dictado por micrófono (STT) con VAD y Auto-mic",
+  "license": "MIT",
+  "author": "deztino",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/deztino/opencode-voz.git"
+  },
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "opencode-desktop",
+    "tts",
+    "stt",
+    "voice",
+    "dictation",
+    "macos"
+  ],
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./gui-experimental": "./dist/gui-experimental.cjs"
+  },
+  "scripts": {
+    "build": "vite build",
+    "watch": "vite build --watch"
+  },
+  "dependencies": {
+    "@opencode/plugin": "latest"
+  },
+  "devDependencies": {
+    "solid-js": "^1.9.0",
+    "vite": "^7.0.0",
+    "vite-plugin-solid": "^2.11.0"
+  }
+}
