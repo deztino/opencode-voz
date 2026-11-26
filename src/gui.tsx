@@ -249,6 +249,10 @@ export default Plugin.define({
       if (!esCampoTexto(objetivo)) return
       if (e.key === "Enter" && !e.shiftKey) {
         ultimaTeclaEn = 0
+        // Después de enviar, la app puede dejar el foco en la última pill tocada
+        // (p. ej. Ajustes). Lo devolvemos al cuadro de escritura.
+        setTimeout(enfocarCuadroTexto, 0)
+        setTimeout(enfocarCuadroTexto, 150)
         return
       }
       ultimaTeclaEn = Date.now()
@@ -335,6 +339,19 @@ export default Plugin.define({
     const opcionesSonido = (server: Servidor, directory?: string) =>
       server.builtin ? opciones(directory) : undefined
 
+    /**
+     * En remoto el plugin que guarda el estado (género, motor, eco, dictado) y reproduce
+     * audio es el local: el servidor remoto no tiene el plugin instalado.
+     */
+    const vozEstado = (server?: Servidor, directory?: string) => {
+      const remoto = Boolean(server && !server.builtin)
+      return { rpc: remoto ? ctx.client.rpc(Voz) : voz(server), opts: remoto ? undefined : opciones(directory) }
+    }
+
+    const diagPlugin = (mensaje: string) => {
+      void ctx.client.rpc(Voz).logDiagnostico({ mensaje }).catch(() => {})
+    }
+
     const [apagada, setApagada] = createSignal(false)
 
     const sesionActual = () => ctx.sessions.current()
@@ -346,7 +363,8 @@ export default Plugin.define({
         return
       }
       try {
-        const res = (await voz().estadoSesion({ sessionID: sesion.id }, opciones(directory))) as {
+        const { rpc, opts } = vozEstado(sesion.server, directory)
+        const res = (await rpc.estadoSesion({ sessionID: sesion.id }, opts)) as {
           apagada: boolean
         }
         setApagada(res.apagada === true)
@@ -359,7 +377,8 @@ export default Plugin.define({
       const sesion = sesionActual()
       if (!sesion?.id) return
       try {
-        const res = (await voz().alternarApagado({ sessionID: sesion.id }, opciones(directory))) as {
+        const { rpc, opts } = vozEstado(sesion.server, directory)
+        const res = (await rpc.alternarApagado({ sessionID: sesion.id }, opts)) as {
           apagada: boolean
         }
         setApagada(res.apagada === true)
@@ -420,29 +439,32 @@ export default Plugin.define({
       const id = sessionID ?? sesionActual()?.id
       const servidor = sesionActual()?.server
       if (servidor && !servidor.builtin && id) {
-        let texto = ultimoTextoPorSesion.get(id)
-        if (!texto) {
-          try {
-            const mensajes = await servidor.client.session.context({ sessionID: id })
-            for (let i = mensajes.length - 1; i >= 0; i--) {
-              const m = mensajes[i] as {
-                type?: string
-                content?: Array<{ type?: string; text?: string }>
-              }
-              if (m?.type !== "assistant") continue
-              const partes = (m.content ?? [])
-                .filter((p) => p?.type === "text" && p.text?.trim())
-                .map((p) => p.text as string)
-              if (partes.length) {
-                texto = partes.join("\n")
-                break
-              }
+        // El contexto del servidor es la fuente de verdad: los eventos pueden venir
+        // a trozos (por ordinal) o quedarse con un mensaje anterior si el último no trajo texto.
+        let texto = ""
+        try {
+          const mensajes = await servidor.client.session.context({ sessionID: id })
+          for (let i = mensajes.length - 1; i >= 0; i--) {
+            const m = mensajes[i] as {
+              type?: string
+              content?: Array<{ type?: string; text?: string }>
             }
-          } catch {
-            // sin contexto remoto: no hay nada para repetir
+            if (m?.type !== "assistant") continue
+            const partes = (m.content ?? [])
+              .filter((p) => p?.type === "text" && p.text?.trim())
+              .map((p) => p.text as string)
+            if (partes.length) {
+              texto = partes.join("\n")
+              break
+            }
           }
+        } catch {
+          // sin contexto remoto: usamos lo que guardamos de los eventos
         }
-        if (texto?.trim()) {
+        const fuente = texto ? "contexto" : "eventos"
+        if (!texto) texto = ultimoTextoPorSesion.get(id)?.texto ?? ""
+        diagPlugin(`repetir sesion=${id} fuente=${fuente} chars=${texto.length}`)
+        if (texto.trim()) {
           await ctx.client.rpc(Voz).leerTexto({ texto, sessionID: id }).catch(() => {})
           return
         }
@@ -478,33 +500,37 @@ export default Plugin.define({
       }
     }
 
-    const cambiarGenero = async (directory?: string) => {
+    const cambiarGenero = async (directory?: string, server?: Servidor) => {
       try {
-        setEstado((await voz().cambiarGenero({}, opciones(directory))) as Estado)
+        const { rpc, opts } = vozEstado(server ?? sesionActual()?.server, directory)
+        setEstado((await rpc.cambiarGenero({}, opts)) as Estado)
       } catch {
         // si el servidor no contesta, no cambia el género
       }
     }
 
-    const cambiarMotor = async (directory?: string) => {
+    const cambiarMotor = async (directory?: string, server?: Servidor) => {
       try {
-        setEstado((await voz().cambiarMotor({}, opciones(directory))) as Estado)
+        const { rpc, opts } = vozEstado(server ?? sesionActual()?.server, directory)
+        setEstado((await rpc.cambiarMotor({}, opts)) as Estado)
       } catch {
         // si el servidor no contesta, no cambia el motor de dictado
       }
     }
 
-    const alternarEco = async (directory?: string) => {
+    const alternarEco = async (directory?: string, server?: Servidor) => {
       try {
-        setEstado((await voz().alternarEco({}, opciones(directory))) as Estado)
+        const { rpc, opts } = vozEstado(server ?? sesionActual()?.server, directory)
+        setEstado((await rpc.alternarEco({}, opts)) as Estado)
       } catch {
         // si el servidor no contesta, no cambia el eco
       }
     }
 
-    const alternarConcurrencia = async (directory?: string) => {
+    const alternarConcurrencia = async (directory?: string, server?: Servidor) => {
       try {
-        const res = (await voz().alternarConcurrencia({}, opciones(directory))) as Estado
+        const { rpc, opts } = vozEstado(server ?? sesionActual()?.server, directory)
+        const res = (await rpc.alternarConcurrencia({}, opts)) as Estado
         setEstado(res)
         const modo = res.concurrencia === "esperar" ? "esperar" : "cortar"
         ctx.toast.show({
@@ -521,7 +547,8 @@ export default Plugin.define({
 
     const guardarTerminoVocabulario = async (termino: string) => {
       try {
-        const res = (await voz().agregarVocabulario({ termino }, opciones())) as {
+        const { rpc, opts } = vozEstado(sesionActual()?.server, carpetaActual())
+        const res = (await rpc.agregarVocabulario({ termino }, opts)) as {
           ok: boolean
           agregado: boolean
           termino: string
@@ -573,7 +600,8 @@ export default Plugin.define({
             const cargarLista = async () => {
               setCargandoLista(true)
               try {
-                const res = (await voz().listarVocabulario({}, opciones())) as {
+                const { rpc, opts } = vozEstado(sesionActual()?.server, carpetaActual())
+                const res = (await rpc.listarVocabulario({}, opts)) as {
                   terminos: string[]
                   ruta: string
                 }
@@ -704,10 +732,19 @@ export default Plugin.define({
     let textoPrevio = ""
     let textoPegado = ""
     let textoVisto = false
+    let textoDestinoId = ""
+    let timerTextoVacio: ReturnType<typeof setTimeout> | undefined
+    const cancelarTimerTextoVacio = () => {
+      if (timerTextoVacio) {
+        clearTimeout(timerTextoVacio)
+        timerTextoVacio = undefined
+      }
+    }
 
     const [cuentaRestante, setCuentaRestante] = createSignal<number | null>(null)
     let timerCuenta: ReturnType<typeof setInterval> | undefined
-    const pararCuenta = () => {
+    const pararCuenta = (motivo: string) => {
+      if (cuentaRestante() !== null) diagPlugin(`cuenta: cortada (${motivo})`)
       if (timerCuenta) {
         clearInterval(timerCuenta)
         timerCuenta = undefined
@@ -715,17 +752,19 @@ export default Plugin.define({
       setCuentaRestante(null)
     }
     const iniciarCuenta = () => {
-      pararCuenta()
-      const seg = Math.max(2, leerEsperaSeg())
+      pararCuenta("reinicio")
+      const seg = leerEsperaSeg()
+      diagPlugin(`cuenta: iniciada ${seg}s`)
       setCuentaRestante(seg)
       timerCuenta = setInterval(() => {
         const actual = cuentaRestante()
         if (actual === null) {
-          pararCuenta()
+          pararCuenta("sin valor")
           return
         }
         if (actual <= 1) {
-          pararCuenta()
+          diagPlugin("cuenta: enviando")
+          pararCuenta("envío")
           controlDictado?.enviarAhora()
           return
         }
@@ -733,38 +772,48 @@ export default Plugin.define({
       }, 1000)
     }
 
-    const cancelarCuentaEnCompositor = (e: Event) => {
-      if (dictado() !== "confirmar" || cuentaRestante() === null) return
-      const composer = document.querySelector<HTMLElement>('[data-component="composer"]')
-      if (composer && e.target instanceof Node && composer.contains(e.target)) pararCuenta()
-    }
-    window.addEventListener("pointerdown", cancelarCuentaEnCompositor, true)
-    window.addEventListener("keydown", cancelarCuentaEnCompositor, true)
-
     const ponerTextoEnCompositor = (texto: string, destino: DestinoDictado) => {
       const composer =
         ctx.sessions.current()?.id === destino.id ? ctx.screen.current()?.composer : undefined
+      cancelarTimerTextoVacio()
       textoPrevio = composer?.text() ?? ""
       textoPegado = texto
       textoVisto = false
+      textoDestinoId = destino.id
       composer?.setText(texto)
     }
 
     createEffect(() => {
       const actual = ctx.screen.current()?.composer.text()
       if (dictado() !== "confirmar" || actual === undefined || !textoPegado) return
+      // Si el foco se movió a otra sesión, no cancelamos: el envío va al hilo original.
+      if (textoDestinoId && ctx.sessions.current()?.id !== textoDestinoId) return
       const limpio = actual.trim()
       if (limpio === textoPegado.trim()) {
         textoVisto = true
+        cancelarTimerTextoVacio()
         return
       }
       // El setText se aplica en cola: no reaccionamos hasta ver el texto pegado.
       if (!textoVisto) return
       if (limpio === "") {
-        controlDictado?.cerrar()
-      } else {
-        controlDictado?.cancelarEnvio()
+        // Un compositor vacío puede ser transitorio (re-render, setText en cola).
+        // Esperamos antes de cancelar, y nunca cerramos el diálogo: eso dejaría
+        // `cerrado = true` y el timer después no podría enviar.
+        if (timerTextoVacio) return
+        timerTextoVacio = setTimeout(() => {
+          timerTextoVacio = undefined
+          if (dictado() !== "confirmar") return
+          const ahora = ctx.screen.current()?.composer.text()?.trim() ?? ""
+          if (ahora !== "") return
+          diagPlugin("cuenta: compositor vacío confirmado")
+          controlDictado?.cancelarEnvio()
+        }, 250)
+        return
       }
+      cancelarTimerTextoVacio()
+      diagPlugin(`cuenta: compositor cambió (${limpio.length} chars)`)
+      controlDictado?.cancelarEnvio()
     })
 
     const abrirDictado = (modoAuto = false, destino?: DestinoDictado) => {
@@ -788,11 +837,13 @@ export default Plugin.define({
 
       // Corta la voz del asistente y pide el micrófono primero en silencio; recién cuando está listo
       // abre el popup y suena el beep para que empiece a grabar sin demora al terminar el sonido.
-      const avisarDictado = (activo: boolean) =>
-        voz(session.server)
-          .estadoDictado({ activo }, opciones(session.directory))
+      const avisarDictado = (activo: boolean) => {
+        const { rpc, opts } = vozEstado(session.server, session.directory)
+        return rpc
+          .estadoDictado({ activo }, opts)
           .then((res) => setEstado(res as Estado))
           .catch(() => {})
+      }
       const corteVoz = avisarDictado(true)
       dialogoAbierto = true
 
@@ -1242,9 +1293,12 @@ export default Plugin.define({
         }
 
         const enviar = () => {
-          if (cancelado || cerrado) return
+          if (cancelado || cerrado) {
+            diagPlugin(`enviar: ignorado (cancelado=${cancelado} cerrado=${cerrado})`)
+            return
+          }
           pausarAutoEnvio()
-          pararCuenta()
+          pararCuenta("enviar")
           const composer =
             ctx.sessions.current()?.id === session.id ? ctx.screen.current()?.composer : undefined
           const limpio = (composer?.text() ?? texto()).trim()
@@ -1252,12 +1306,13 @@ export default Plugin.define({
           setDictado("libre")
           cerrarDialogo(false)
           if (composer) composer.setText(textoPrevio)
+          const marcado = vozEstado(session.server, session.directory)
           void (async () => {
             try {
               await Promise.race([
                 Promise.all([
                   avisarDictado(false),
-                  voz(session.server).marcarDictado({}, opciones(session.directory)).catch(() => {}),
+                  marcado.rpc.marcarDictado({}, marcado.opts).catch(() => {}),
                 ]),
                 new Promise((r) => setTimeout(r, 250)),
               ])
@@ -1406,6 +1461,12 @@ export default Plugin.define({
               ctx.toast.show({ title: "Auto-mic desactivado", variant: "default" })
               return
             }
+            // Limpiamos el seguimiento ANTES de pasar a confirmar: si no, el effect
+            // reacciona al cambio de fase con el textoVisto del dictado anterior.
+            textoPegado = ""
+            textoVisto = false
+            textoDestinoId = ""
+            cancelarTimerTextoVacio()
             setTexto(limpio)
             setFase("confirmar")
             setDictado("confirmar")
@@ -1484,6 +1545,7 @@ export default Plugin.define({
         onCleanup(() => {
           restaurarTransparencia()
           window.removeEventListener("keydown", onWindowKeyDown, true)
+          cancelarTimerTextoVacio()
           detenerVad()
           if (intervaloEnvio) {
             clearInterval(intervaloEnvio)
@@ -1572,7 +1634,7 @@ export default Plugin.define({
           cancelarEnvio: () => {
             pausarAutoEnvio()
             setRestante(null)
-            pararCuenta()
+            pararCuenta("cancelar envío")
           },
           enviarAhora: () => enviar(),
           cerrar: () => {
@@ -1778,95 +1840,87 @@ export default Plugin.define({
     })
 
     ctx.add(ComposerPill, {
-      id: "auto-mic",
+      id: "ajustes-voz",
       order: 30,
-      show: (): ComposerPillView | undefined => {
-        if (apagada() || dictado() !== "libre") return undefined
-        if (autoMic()) {
-          return {
-            label: "Auto-mic on",
-            icon: "outline-wave-audio",
-            tone: "success",
-            title: "Auto-mic prendido: vuelve a abrir el dictado al terminar cada respuesta dictada",
-            run: alternarAutoMic,
-          }
-        }
-        return {
-          label: "Auto-mic off",
-          icon: "outline-audio",
-          title: "Prender Auto-mic para reabrir el dictado automáticamente tras cada respuesta dictada",
-          run: alternarAutoMic,
-        }
-      },
-    })
-
-    ctx.add(ComposerPill, {
-      id: "genero-voz",
-      order: 40,
       show: (input): ComposerPillView | undefined => {
         if (apagada() || dictado() !== "libre") return undefined
-        const esMasc = estado().genero === "masc"
-        return {
-          label: esMasc ? "Masc" : "Fem",
-          icon: "outline-audio",
-          tone: esMasc ? "warning" : undefined,
-          title: esMasc
-            ? "Voz masculina (Carlos): clic para cambiar a voz femenina (Dalia)"
-            : "Voz femenina (Dalia): clic para cambiar a voz masculina (Carlos)",
-          run: () => {
-            soltarFocoBoton()
-            void cambiarGenero(input.session.directory)
-            enfocarCuadroTexto()
-          },
+        const server = input.session.server
+        const directory = input.session.directory
+        const actual = estado()
+        const esMasc = actual.genero === "masc"
+        const motor = actual.motor ?? "auto"
+        const motorTexto = motor === "elevenlabs" ? "ElevenLabs" : motor === "groq" ? "Groq" : "Auto"
+        const ecoActivo = actual.eco !== false
+        const cambiar = (fn: (dir?: string, srv?: Servidor) => Promise<void>) => () => {
+          soltarFocoBoton()
+          void fn(directory, server)
+          enfocarCuadroTexto()
         }
-      },
-    })
-
-    ctx.add(ComposerPill, {
-      id: "motor-dictado",
-      order: 50,
-      show: (input): ComposerPillView | undefined => {
-        if (apagada() || dictado() !== "libre") return undefined
-        const actual = estado().motor ?? "auto"
-        const label = actual === "elevenlabs" ? "Eleven" : actual === "groq" ? "Groq" : "Auto"
-        const title =
-          actual === "auto"
-            ? "Dictado automático: ElevenLabs y, si falla, Groq. Clic para usar solo ElevenLabs"
-            : actual === "elevenlabs"
-              ? "Dictado solo con ElevenLabs. Clic para usar solo Groq"
-              : "Dictado solo con Groq. Clic para volver al automático"
         return {
-          label,
-          icon: "outline-audio",
-          tone: actual === "elevenlabs" ? "success" : actual === "groq" ? "warning" : undefined,
-          title,
-          run: () => {
-            soltarFocoBoton()
-            void cambiarMotor(input.session.directory)
-            enfocarCuadroTexto()
-          },
-        }
-      },
-    })
-
-    ctx.add(ComposerPill, {
-      id: "eco-voz",
-      order: 55,
-      show: (input): ComposerPillView | undefined => {
-        if (apagada() || dictado() !== "libre") return undefined
-        const activo = estado().eco !== false
-        return {
-          label: "Eco",
-          icon: activo ? "outline-audio" : "circle-ban-sign",
-          tone: activo ? "success" : undefined,
-          title: activo
-            ? "Eco prendido: lee tus mensajes, 'Trabajando.' y herramientas. Clic para apagarlo"
-            : "Eco apagado: solo lee las respuestas del asistente. Clic para prenderlo",
-          run: () => {
-            soltarFocoBoton()
-            void alternarEco(input.session.directory)
-            enfocarCuadroTexto()
-          },
+          label: "Ajustes",
+          icon: "outline-dots",
+          title: "Ajustes de voz: auto-mic, género, motor, eco y espera del envío",
+          rows: [
+            {
+              id: "auto-mic",
+              label: "Auto-mic",
+              icon: "outline-wave-audio",
+              tone: autoMic() ? "success" : undefined,
+              detail: autoMic() ? "on" : "off",
+              run: alternarAutoMic,
+            },
+            {
+              id: "genero",
+              label: "Voz",
+              icon: "outline-audio",
+              detail: esMasc ? "masculina" : "femenina",
+              run: cambiar(cambiarGenero),
+            },
+            {
+              id: "motor",
+              label: "Motor",
+              icon: "outline-audio",
+              detail: motorTexto,
+              run: cambiar(cambiarMotor),
+            },
+            {
+              id: "eco",
+              label: "Eco",
+              icon: ecoActivo ? "outline-audio" : "circle-ban-sign",
+              tone: ecoActivo ? "success" : undefined,
+              detail: ecoActivo ? "prendido" : "apagado",
+              run: cambiar(alternarEco),
+            },
+            {
+              id: "espera",
+              label: "Espera para enviar",
+              icon: "enter",
+              detail: `${leerEsperaSeg()} s`,
+              run: () => {
+                const valores = [2, 3, 5, 10, 20]
+                const actualSeg = leerEsperaSeg()
+                const indice = valores.indexOf(actualSeg)
+                guardarEsperaSeg(valores[(indice + 1) % valores.length] ?? 5)
+              },
+            },
+            {
+              id: "hilos",
+              label: "Audio entre hilos",
+              icon: "outline-wave-audio",
+              detail: actual.concurrencia === "esperar" ? "esperar turno" : "cortar anterior",
+              run: () => {
+                soltarFocoBoton()
+                void alternarConcurrencia(directory, server)
+                enfocarCuadroTexto()
+              },
+            },
+            {
+              id: "corregir",
+              label: "Corregir vocabulario",
+              icon: "edit",
+              run: abrirDialogoVocabulario,
+            },
+          ],
         }
       },
     })
@@ -1966,7 +2020,8 @@ export default Plugin.define({
 
     let bajas: Array<() => void> = []
     let controlEventosRemotos: AbortController | undefined
-    const ultimoTextoPorSesion = new Map<string, string>()
+    const ultimoTextoPorSesion = new Map<string, { msgID: string; texto: string }>()
+    let ultimaSesionLeida: string | undefined
     const cerrarBajas = () => {
       for (const baja of bajas) {
         try {
@@ -1976,6 +2031,40 @@ export default Plugin.define({
         }
       }
       bajas = []
+    }
+
+    /** Programa la reapertura del micrófono tras un turno leído en voz alta. */
+    const programarAutoMic = (idEvento?: string, dirEvento?: string, origen = "turno") => {
+      const txt = (motivo: string) => `autoMic[${origen}]: ${motivo}`
+      if (desmontado) return diagPlugin(txt("desmontado"))
+      if (!autoMic()) return diagPlugin(txt("off"))
+      if (dialogoAbierto || dictado() !== "libre") return diagPlugin(txt(`ocupado=${dictado()}`))
+      if (usuarioEscribiendo()) return diagPlugin(txt("escribiendo"))
+      const actual = ctx.sessions.current()
+      const sesionOrigen = idEvento ? ctx.sessions.list().find((s) => s.id === idEvento) : undefined
+      const destinoId = idEvento ?? actual?.id
+      const destinoDir = dirEvento ?? sesionOrigen?.location?.directory ?? actual?.directory
+      const destinoServer = sesionOrigen?.server ?? actual?.server
+      if (!destinoId || !destinoDir || !destinoServer) {
+        return diagPlugin(txt(`sin destino id=${destinoId ?? "-"} dir=${destinoDir ?? "-"} srv=${Boolean(destinoServer)}`))
+      }
+      if (apagada() && actual?.id === destinoId) return diagPlugin(txt("sesion apagada"))
+      diagPlugin(txt(`programado ${AUTO_MIC_RETRASO_MS}ms sesion=${destinoId}`))
+      cancelarTimerAutoMic()
+      timerAutoMic = setTimeout(() => {
+        timerAutoMic = undefined
+        if (desmontado || !autoMic() || dialogoAbierto || dictado() !== "libre") {
+          return diagPlugin(txt(`cancelado en timer estado=${dictado()}`))
+        }
+        if (usuarioEscribiendo()) return diagPlugin(txt("escribiendo en timer"))
+        const ahoraActual = ctx.sessions.current()
+        if (apagada() && ahoraActual?.id === destinoId) return diagPlugin(txt("sesion apagada en timer"))
+        if (estado().hablando || estado().silenciado) {
+          return diagPlugin(txt(`hablando=${estado().hablando} silenciado=${estado().silenciado}`))
+        }
+        diagPlugin(txt("abriendo microfono"))
+        abrirDictado(true, { id: destinoId, directory: destinoDir, server: destinoServer })
+      }, AUTO_MIC_RETRASO_MS)
     }
 
     // Se suscribe al servidor de la sesión montada: en remoto, el servidor local de la app
@@ -1999,13 +2088,21 @@ export default Plugin.define({
               signal: ctrl.signal,
             })) {
               if (ctrl.signal.aborted || desmontado) break
-              const d = ev.data as { sessionID?: string; text?: string }
+              const d = ev.data as { sessionID?: string; assistantMessageID?: string; text?: string }
               const idMontado = ctx.sessions.current()?.id
               diag(
-                `evento ${ev.type} sesion=${d?.sessionID ?? "?"} montada=${idMontado ?? "?"} chars=${d?.text?.length ?? 0}`,
+                `evento ${ev.type} sesion=${d?.sessionID ?? "?"} msg=${d?.assistantMessageID ?? "?"} montada=${idMontado ?? "?"} chars=${d?.text?.length ?? 0}`,
               )
               if (!d?.sessionID || !d.text?.trim()) continue
-              ultimoTextoPorSesion.set(d.sessionID, d.text)
+              const previo = ultimoTextoPorSesion.get(d.sessionID)
+              if (previo && previo.msgID && previo.msgID === d.assistantMessageID) {
+                previo.texto += `\n${d.text}`
+              } else {
+                ultimoTextoPorSesion.set(d.sessionID, {
+                  msgID: d.assistantMessageID ?? "",
+                  texto: d.text,
+                })
+              }
               if (idMontado && d.sessionID !== idMontado) continue
               if (dictado() !== "libre" || apagada()) {
                 diag("omitido: dictando o apagada")
@@ -2014,6 +2111,7 @@ export default Plugin.define({
               diag("llamando leerTexto local")
               try {
                 await ctx.client.rpc(Voz).leerTexto({ texto: d.text, sessionID: d.sessionID })
+                ultimaSesionLeida = d.sessionID
                 diag("leerTexto ok")
               } catch (error) {
                 diag(`leerTexto error: ${error instanceof Error ? error.message : String(error)}`)
@@ -2027,6 +2125,22 @@ export default Plugin.define({
       if (server && !server.builtin) {
         bajas.push(
           ctx.client.rpc(Voz).events.on("estado", (evento) => setEstado(evento.data as Estado)),
+        )
+        // En remoto el plugin local lee en voz alta pero nunca ve los eventos del
+        // servidor ajeno, así que no emite "turnoTerminado". Usamos "lecturaTerminada",
+        // que sí dispara al terminar la cola de audio en esta máquina.
+        diagPlugin("suscripto a lecturaTerminada local")
+        bajas.push(
+          ctx.client.rpc(Voz).events.on("lecturaTerminada", (evento) => {
+            const id = ((evento.data ?? {}) as { sessionID?: string }).sessionID
+            if (!ultimaSesionLeida || !id || id !== ultimaSesionLeida) {
+              return diagPlugin(
+                `lecturaTerminada ignorada sesion=${id ?? "?"} esperada=${ultimaSesionLeida ?? "?"}`,
+              )
+            }
+            diagPlugin(`lecturaTerminada local sesion=${id} autoMic=${autoMic()}`)
+            programarAutoMic(id, undefined, "lecturaTerminada")
+          }),
         )
       }
       try {
@@ -2054,28 +2168,8 @@ export default Plugin.define({
         )
         bajas.push(
           cliente.events.on("turnoTerminado", (evento) => {
-            if (desmontado || !autoMic() || dialogoAbierto || dictado() !== "libre") return
-            if (usuarioEscribiendo()) return
             const data = (evento.data ?? {}) as { sessionID?: string }
-            const idEvento = data.sessionID
-            const dirEvento = evento.location?.directory
-            const actual = ctx.sessions.current()
-            const sesionOrigen = idEvento ? ctx.sessions.list().find((s) => s.id === idEvento) : undefined
-            const destinoId = idEvento ?? actual?.id
-            const destinoDir = dirEvento ?? sesionOrigen?.location?.directory ?? actual?.directory
-            const destinoServer = sesionOrigen?.server ?? actual?.server
-            if (!destinoId || !destinoDir || !destinoServer) return
-            if (apagada() && actual?.id === destinoId) return
-            cancelarTimerAutoMic()
-            timerAutoMic = setTimeout(() => {
-              timerAutoMic = undefined
-              if (desmontado || !autoMic() || dialogoAbierto || dictado() !== "libre") return
-              if (usuarioEscribiendo()) return
-              const ahoraActual = ctx.sessions.current()
-              if (apagada() && ahoraActual?.id === destinoId) return
-              if (estado().hablando || estado().silenciado) return
-              abrirDictado(true, { id: destinoId, directory: destinoDir, server: destinoServer })
-            }, AUTO_MIC_RETRASO_MS)
+            programarAutoMic(data.sessionID, evento.location?.directory, "turnoTerminado")
           }),
         )
       } catch {
@@ -2102,9 +2196,8 @@ export default Plugin.define({
     return () => {
       desmontado = true
       window.removeEventListener("keydown", onTeclaUsuario, true)
-      window.removeEventListener("pointerdown", cancelarCuentaEnCompositor, true)
-      window.removeEventListener("keydown", cancelarCuentaEnCompositor, true)
-      pararCuenta()
+      cancelarTimerTextoVacio()
+      pararCuenta("desmontaje")
       cancelarTimerAutoMic()
       liberarMic()
       cerrarBajas()

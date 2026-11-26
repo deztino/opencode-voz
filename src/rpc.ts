@@ -147,6 +147,15 @@ const TURNO_TERMINADO = {
   additionalProperties: false,
 } as const
 
+/** Sesión cuyo audio terminó de reproducirse. */
+const LECTURA_TERMINADA = {
+  type: "object",
+  properties: {
+    sessionID: { type: "string" },
+  },
+  additionalProperties: false,
+} as const
+
 /**
  * Puente entre la parte gráfica (la app de escritorio) y el motor de voz
  * (el servidor). La parte gráfica no puede matar procesos ni leer las claves
@@ -205,7 +214,7 @@ export const Voz = Rpc.define({
     /** Avisa a la parte gráfica cada vez que cambia el estado. */
     estado: { schema: ESTADO },
     /** Avisa cuando termina de leer en voz alta una respuesta del asistente. */
-    lecturaTerminada: { schema: VACIO },
+    lecturaTerminada: { schema: LECTURA_TERMINADA },
     /** Avisa cuando el asistente terminó de responder y de leer en voz alta un turno. */
     turnoTerminado: { schema: TURNO_TERMINADO },
     /** Pide a la parte gráfica que lea un texto en la máquina del usuario. */

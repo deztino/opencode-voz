@@ -12,22 +12,30 @@ Podés ver el detalle completo de todas las funcionalidades en [`FEATURES.md`](.
 
 - **Sin popup de grabación:** mientras dictás, la barra arriba del cuadro de
   escritura muestra una barra horizontal de nivel con los segundos, **Pausar /
-  Reanudar**, **Cancelar** y **Enviar voz**. Se ocultan las pills normales
-  (motor, eco, género, Auto-mic) y vuelven al terminar.
+  Reanudar**, **Cancelar** y **Enviar voz**. Se ocultan las pills normales,
+  incluida **Ajustes**, y vuelven al terminar.
+- **Ajustes en un solo menú:** la pill **"Ajustes"** abre un menú con Auto-mic,
+  Voz (femenina/masculina), Motor (Auto/ElevenLabs/Groq), Eco, Espera para
+  enviar (2/3/5/10/20 segundos, tocás para ciclar), Audio entre hilos
+  (cortar anterior / esperar turno, lo mismo que `/cortar`) y Corregir
+  vocabulario (abre la lista de palabras, lo mismo que `/corregir`). Reemplaza
+  a las cuatro pills que estaban en la barra; en remoto estos controles apuntan
+  al plugin local.
 - **El texto va al compositor:** al transcribir, se pega en el cuadro de
-  escritura y aparece **"Enviar en Ns"**; si lo tocás, o editás/hacés clic en el
-  cuadro, se cancela la cuenta y mandás con Enter cuando quieras. Si había
-  texto escrito antes, se preserva.
+  escritura y aparece **"Enviar en Ns"**; si lo tocás o editás el texto, se
+  cancela la cuenta y mandás con Enter cuando quieras. Un clic sin editar no
+  cancela el envío. Si había texto escrito antes, se preserva.
 - **Servidores remotos:** el dictado se transcribe en la Mac con las claves
   locales, así que no hace falta instalar el plugin ni las claves en el
   servidor. Las respuestas del servidor se leen también en la Mac, con el mismo
   motor de voz; **Voz / Pausar voz / Detener / Silenciar** funcionan igual que
   en una sesión local, y **Voz** repite el último mensaje remoto.
 - **Sin solapes:** si se está leyendo otra sesión, el texto remoto corta esa
-  lectura antes de empezar; los bloques de una misma sesión se encolan.
+  lectura antes de empezar; los bloques de una misma sesión se encolan. Al
+  apretar **Dictar** se corta la lectura en curso también en remoto.
 - **Logs:** `~/.local/share/opencode/log/voz-dictado.log` para transcripciones y
   `~/.local/share/opencode/log/voz-remoto.log` para el diagnóstico de lectura
-  remota.
+  remota, la repetición y cada inicio/corte de la cuenta regresiva.
 
 ### Lectura en voz alta (TTS)
 - **Streaming oración por oración:** empieza a generar el audio mientras el
@@ -50,12 +58,11 @@ Podés ver el detalle completo de todas las funcionalidades en [`FEATURES.md`](.
   la voz contraria a la del asistente, omitiendo código, capturas completas de
   terminal Linux/SSH, tablas en columnas y HTML pegado), avisa "Trabajando",
   herramientas en uso ("Usando Leer", "Usando Terminal", etc.) y permisos
-  pendientes. Con la pill global **"Eco"** (verde/gris) podés apagar el eco,
-  "Trabajando." y herramientas dejando solo las respuestas y `"Permiso pendiente."`.
-- **Voz femenina / masculina:** pill **"Fem / Masc"** a la derecha de Auto-mic
-  (gris en Fem, ámbar en Masc) para alternar al instante entre Dalia
-  (`es-MX-DaliaNeural`) y Carlos (`es-HN-CarlosNeural`), guardado y sincronizado
-  entre instancias.
+  pendientes. Desde **Ajustes > Eco** podés apagar el eco, "Trabajando." y
+  herramientas dejando solo las respuestas y `"Permiso pendiente."`.
+- **Voz femenina / masculina:** desde **Ajustes > Voz** alternás al instante
+  entre Dalia (`es-MX-DaliaNeural`) y Carlos (`es-HN-CarlosNeural`), guardado
+  y sincronizado entre instancias.
 - **Corte automático y coordinación entre sesiones (`/cortar`):** por defecto
   en modo **cortar**, apenas otra sesión empieza a responder frena al instante
   el audio anterior (incluso entre proyectos distintos) para que nunca se
@@ -76,19 +83,21 @@ Podés ver el detalle completo de todas las funcionalidades en [`FEATURES.md`](.
   - Al transcribir, el texto se pega en el compositor con una cuenta regresiva
     cancelable: tocá el pill **"Enviar en Ns"** para editar tranquilo y mandá
     con Enter, o esperá a que se envíe solo.
-  - Transcribe con **ElevenLabs Scribe v3** o **Groq Whisper**, elegible con la
-    pill **"Auto / Eleven / Groq"** (automático con respaldo, o uno solo),
+  - Transcribe con **ElevenLabs Scribe v3** o **Groq Whisper**, elegible desde
+    **Ajustes > Motor** (automático con respaldo, o uno solo),
     usando vocabulario personalizado desde `~/.config/opencode/voz-vocabulario.md`,
     editable rápido con `/corregir palabra` o `/corregir lista`.
   - Cada intento queda en `~/.local/share/opencode/log/voz-dictado.log`
     (incluyendo si se envió vocabulario y cuántos términos/caracteres), y si
     falta la clave del motor elegido el popup avisa cuál falta.
-- **Modo "Auto-mic on / Auto-mic off"** (pill al lado de "Dictar"): mientras
+- **Modo Auto-mic on / off** (**Ajustes > Auto-mic**): mientras
   esté prendido vuelve a abrir el micrófono automáticamente al terminar cada
   respuesta (enviando siempre al hilo que respondió, aunque estés mirando otro,
   y salteando la tanda si estás escribiendo con teclado), cierra solo si pasan
   8 segundos sin voz y se apaga con beep largo al decir **"dejar de escuchar"**
-  o **"deja de escuchar"**.
+  o **"deja de escuchar"**. En remoto se dispara con el evento local
+  `lecturaTerminada` (el plugin no ve los eventos del servidor ajeno, así que
+  no emitía `turnoTerminado`).
 - **Efectos de sonido:** `assets/beep.wav` al abrir el popup de dictado,
   `assets/beep-error.wav` (largo y agudo) si pasan 8 segundos sin voz, al
   apagar Auto-mic por voz o si falla la transcripción, `assets/staplebops-01.aac`

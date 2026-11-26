@@ -1474,7 +1474,7 @@ export default Plugin.define({
           concurrencia: ModoConcurrencia
         }) => void)
       | undefined
-    let avisarLecturaTerminada: (() => void) | undefined
+    let avisarLecturaTerminada: ((sessionID?: string) => void) | undefined
     let avisarTurnoTerminado: ((sessionID?: string) => void) | undefined
     let avisarTextoParaLeer: ((texto: string, sessionID?: string) => void) | undefined
 
@@ -2016,7 +2016,7 @@ export default Plugin.define({
               marcarHablando(false)
               if (!interrumpido && !muted && !dictandoEnCurso() && !sesionApagada(sessionID ?? sesionActiva)) {
                 reproducirEfecto(SONIDO_FIN_LECTURA)
-                avisarLecturaTerminada?.()
+                avisarLecturaTerminada?.(sessionID)
                 notificarTurnoTerminadoSiListo()
               }
             }
@@ -2499,8 +2499,8 @@ export default Plugin.define({
       avisar = (estado) => {
         void registro.events.emit("estado", estado)
       }
-      avisarLecturaTerminada = () => {
-        void registro.events.emit("lecturaTerminada", {})
+      avisarLecturaTerminada = (sessionID?: string) => {
+        void registro.events.emit("lecturaTerminada", sessionID ? { sessionID } : {})
       }
       avisarTurnoTerminado = (sessionID?: string) => {
         void registro.events.emit("turnoTerminado", sessionID ? { sessionID } : {})
