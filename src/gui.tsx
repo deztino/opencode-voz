@@ -1938,32 +1938,37 @@ export default Plugin.define({
       if (server && !server.builtin) {
         const ctrl = new AbortController()
         controlEventosRemotos = ctrl
+        const diag = (mensaje: string) =>
+          void ctx.client.rpc(Voz).logDiagnostico({ mensaje }).catch(() => {})
+        diag(`suscripto a ${server.url}`)
         void (async () => {
-          const textoPorSesion = new Map<string, string>()
           try {
             for await (const ev of server.client.event.subscribe({
-              types: ["session.text.delta", "session.idle"],
+              types: ["session.text.ended"],
               signal: ctrl.signal,
             })) {
               if (ctrl.signal.aborted || desmontado) break
-              if (ev.type === "session.text.delta") {
-                const d = ev.data as { sessionID?: string; delta?: string }
-                if (!d?.sessionID || !d.delta) continue
-                const idMontado = ctx.sessions.current()?.id
-                if (idMontado && d.sessionID !== idMontado) continue
-                textoPorSesion.set(d.sessionID, (textoPorSesion.get(d.sessionID) ?? "") + d.delta)
-              } else if (ev.type === "session.idle") {
-                const d = ev.data as { sessionID?: string }
-                const id = d?.sessionID
-                if (!id) continue
-                const texto = (textoPorSesion.get(id) ?? "").trim()
-                textoPorSesion.delete(id)
-                if (!texto || desmontado || dictado() !== "libre" || apagada()) continue
-                void ctx.client.rpc(Voz).leerTexto({ texto, sessionID: id }).catch(() => {})
+              const d = ev.data as { sessionID?: string; text?: string }
+              const idMontado = ctx.sessions.current()?.id
+              diag(
+                `evento ${ev.type} sesion=${d?.sessionID ?? "?"} montada=${idMontado ?? "?"} chars=${d?.text?.length ?? 0}`,
+              )
+              if (!d?.sessionID || !d.text?.trim()) continue
+              if (idMontado && d.sessionID !== idMontado) continue
+              if (dictado() !== "libre" || apagada()) {
+                diag("omitido: dictando o apagada")
+                continue
+              }
+              diag("llamando leerTexto local")
+              try {
+                await ctx.client.rpc(Voz).leerTexto({ texto: d.text, sessionID: d.sessionID })
+                diag("leerTexto ok")
+              } catch (error) {
+                diag(`leerTexto error: ${error instanceof Error ? error.message : String(error)}`)
               }
             }
-          } catch {
-            // el servidor remoto se desconectó; se reintentará al cambiar de sesión
+          } catch (error) {
+            diag(`stream cortado: ${error instanceof Error ? error.message : String(error)}`)
           }
         })()
       }

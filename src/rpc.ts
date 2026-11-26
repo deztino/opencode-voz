@@ -119,6 +119,14 @@ const DICTADO_ESTADO = {
   additionalProperties: false,
 } as const
 
+/** Mensaje de diagnóstico de la lectura remota. */
+const DIAGNOSTICO = {
+  type: "object",
+  properties: { mensaje: { type: "string" } },
+  required: ["mensaje"],
+  additionalProperties: false,
+} as const
+
 /** Texto que un servidor remoto manda leer en la máquina del usuario. */
 const TEXTO_PARA_LEER = {
   type: "object",
@@ -190,6 +198,8 @@ export const Voz = Rpc.define({
     estadoDictado: { input: DICTADO_ESTADO, output: ESTADO },
     /** Lee en voz alta en esta máquina un texto que mandó un servidor remoto. */
     leerTexto: { input: TEXTO_PARA_LEER, output: ESTADO },
+    /** Anota un paso de la lectura remota para diagnosticarla. */
+    logDiagnostico: { input: DIAGNOSTICO, output: VACIO },
   },
   events: {
     /** Avisa a la parte gráfica cada vez que cambia el estado. */

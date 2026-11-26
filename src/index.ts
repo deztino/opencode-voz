@@ -1007,6 +1007,16 @@ function promptParaGroq(terminos: string[]): string | undefined {
 
 const RUTA_LOG_DICTADO = join(process.env.HOME ?? tmpdir(), ".local/share/opencode/log/voz-dictado.log")
 const MAX_LINEAS_LOG_DICTADO = 200
+const RUTA_LOG_REMOTO = join(process.env.HOME ?? tmpdir(), ".local/share/opencode/log/voz-remoto.log")
+
+function registrarLogRemoto(mensaje: string) {
+  try {
+    mkdirSync(dirname(RUTA_LOG_REMOTO), { recursive: true })
+    appendFileSync(RUTA_LOG_REMOTO, `${new Date().toISOString()} ${mensaje}\n`, "utf8")
+  } catch {
+    // diagnóstico auxiliar
+  }
+}
 
 /**
  * Anota cada intento de dictado en un log propio, porque el error que se
@@ -2450,6 +2460,10 @@ export default Plugin.define({
         },
         listarVocabulario: async () => {
           return { terminos: cargarVocabulario(), ruta: rutaVocabulario() }
+        },
+        logDiagnostico: async (input) => {
+          registrarLogRemoto(((input as { mensaje?: string })?.mensaje ?? "").slice(0, 300))
+          return {}
         },
         leerTexto: async (input) => {
           const { texto, sessionID } = (input ?? {}) as { texto?: string; sessionID?: string }
