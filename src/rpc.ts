@@ -64,6 +64,14 @@ const SESION_ENTRADA = {
   additionalProperties: false,
 } as const
 
+/** Si hay audio o texto de la última respuesta guardado para repetir en esa sesión. */
+const TIENE_VOZ = {
+  type: "object",
+  properties: { tiene: { type: "boolean" } },
+  required: ["tiene"],
+  additionalProperties: false,
+} as const
+
 /** Si el plugin de voz está apagado en esa sesión. */
 const SESION_APAGADA = {
   type: "object",
@@ -187,6 +195,8 @@ export const Voz = Rpc.define({
     alternarApagado: { input: SESION_ENTRADA, output: SESION_APAGADA },
     /** Consulta si el plugin está apagado en esa sesión. */
     estadoSesion: { input: SESION_ENTRADA, output: SESION_APAGADA },
+    /** Consulta si hay voz guardada para repetir en esa sesión. */
+    tieneVoz: { input: SESION_ENTRADA, output: TIENE_VOZ },
     /** Marca que el próximo mensaje del usuario se envía desde el dictado por voz. */
     marcarDictado: { input: VACIO, output: ESTADO },
     /** Transcribe audio grabado por el usuario con ElevenLabs o Groq. */

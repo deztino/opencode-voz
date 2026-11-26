@@ -2428,6 +2428,15 @@ export default Plugin.define({
           const { sessionID } = input as { sessionID: string }
           return { apagada: sesionApagada(sessionID) }
         },
+        tieneVoz: async (input) => {
+          const { sessionID } = (input ?? {}) as { sessionID?: string }
+          const id = sessionID || sesionActiva
+          const entrada = id ? ultimosPorSesion.get(id) : undefined
+          const archivos = entrada?.archivos.filter((archivo) => existsSync(archivo)) ?? []
+          return {
+            tiene: Boolean(entrada && (archivos.length > 0 || (entrada.texto ?? "").trim().length > 0)),
+          }
+        },
         marcarDictado: async () => {
           const hasta = Date.now() + 10_000
           proximoMensajeDictadoHasta = hasta

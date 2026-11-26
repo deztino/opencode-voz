@@ -16,8 +16,8 @@ Plugin de OpenCode para macOS que brinda una conversación completa ida y vuelta
 - **Corte automático y coordinación global entre sesiones (`/cortar`):** coordina el turno de audio entre todas las instancias del plugin para que nunca se mezclen dos voces. Por defecto funciona en modo **cortar** (apenas otra sesión empieza a hablar corta al instante el reproductor anterior y descarta su cola sin caer al respaldo `say`); con `/cortar` alternás a modo **esperar turno** (y viceversa), sincronizado entre instancias.
 - **Pill "Voz ON / Voz OFF" por sesión:** aparece primera a la izquierda (verde en ON, ámbar en OFF). Al apagar una sesión, esconde las demás pills, corta de inmediato el reproductor y la cola pendiente de esa sesión (incluso entre instancias), ignora sus eventos y bloquea Auto-mic y dictado en esa charla, sin interferir con otras sesiones prendidas. Se guarda por sesión.
 - **Pill "Voz" arriba del cuadro de escritura:**
-  - **Voz** (gris): en reposo; repite el último mensaje leído.
-  - **Pausar voz** (verde): reproduciendo; pausa la lectura.
+  - **Voz** (gris): en reposo; repite el último mensaje leído. Si no hay audio ni texto guardado de una respuesta en esa sesión, se muestra con icono de prohibido y sin acción (no se puede tocar); se habilita apenas termina de leerse la primera respuesta.
+  - **Pausar voz** (verde): reproduciendo; pausa la lectura. El icono alterna entre dos dibujos de onda cada 1 segundo mientras se reproduce, para que se vea que está hablando.
   - **Seguir voz** (rojo): en pausa; retoma la lectura.
   - **Voz apagada** (gris): lectura silenciada; vuelve a activarla.
 
@@ -38,14 +38,14 @@ Plugin de OpenCode para macOS que brinda una conversación completa ida y vuelta
 
 ## 3. Dictado por voz (STT) y detección automática (VAD)
 
-- **Acceso rápido:** pill **"Dictar"** con borde rojo bien visible (fondo transparente en reposo, relleno rojo al presionarlo o mientras graba) al lado de "Voz".
-- **Control desde la barra, sin modal:** al dictar se ocultan las pills habituales y aparecen **nivel de micrófono horizontal de 8 segmentos** (`████░░░░`) con el contador (`MM:SSs`), **Pausar / Reanudar**, **Cancelar** y **Enviar voz**. La conversación de atrás sigue visible y se puede scrollear; el velo y la capa del diálogo no interceptan la rueda del mouse, y la rueda y las flechas se reenvían al scroll de la charla.
+- **Acceso rápido:** pill **"Dictar"** con borde rojo bien visible (fondo transparente en reposo, fondo rojo al 30 por ciento al pasar el mouse, relleno rojo al presionarlo o mientras graba) al lado de "Voz".
+- **Control desde la barra, sin modal:** al dictar se ocultan las pills habituales y aparecen, en orden, **Pausar / Reanudar**, **Cancelar**, **Enviar voz**, el **led de audio** y el **nivel de micrófono horizontal de 8 segmentos** (`████░░░░`) con el contador (`MM:SSs`); el nivel queda como el botón más a la derecha de la barra. El led muestra un círculo rojo hasta que hay audio transcribible y pasa a verde apenas el VAD detecta voz (200 ms, el mismo momento en que decide que hablaste), recuperado del diseño del modal. La conversación de atrás sigue visible y se puede scrollear; el velo y la capa del diálogo no interceptan la rueda del mouse, y la rueda y las flechas se reenvían al scroll de la charla.
 - **Transcribiendo:** pill **"Transcribiendo…"** mientras procesa el audio.
 - **Texto en el compositor:** la transcripción se pega en el cuadro de escritura y aparece **"Enviar en Ns"** (el valor se elige en **Ajustes > Espera para enviar**). Tocar ese pill o editar el texto cancela el envío automático; un clic sin editar no lo cancela. Entonces se edita y se envía con Enter. Si había un borrador previo, se restaura al enviar. **"Enviar ahora"** permite mandar el texto editado. Los inicios y cortes de la cuenta se registran en `voz-remoto.log`. Se evita la carrera en que un compositor leído vacío al pasar a `confirmar` cerraba el diálogo y el timer después no podía enviar.
 - **Errores:** se muestran como aviso (toast), con el detalle copiable desde el propio aviso.
 - **Detección de actividad de voz (VAD):**
   - Captura audio con cancelación de eco y supresión de ruido (`echoCancellation`, `noiseSuppression`).
-  - Espera a que termine el beep antes de arrancar la grabación y el VAD, salta 250 milisegundos iniciales antes de detectar voz y espera 600 milisegundos (con tope en `0.008`) antes de calibrar el piso de ruido para que el eco del beep no suba la vara.
+  - Espera a que termine el beep antes de arrancar la grabación y el VAD, salta 500 milisegundos iniciales antes de detectar voz (para que el beep de 320 ms y su cola no prendan el led) y espera 700 milisegundos (con tope en `0.008`) antes de calibrar el piso de ruido para que el eco del beep no suba la vara.
   - **Modo manual:** requiere 200 ms de voz por encima de 2,1 veces el piso de ruido (umbral mínimo `0.006`).
   - **Modo Auto-mic:** requiere 200 ms de voz por encima de 2,1 veces el piso de ruido (umbral mínimo `0.009`).
   - **Cierre sin voz con aviso sonoro:** tanto en dictado manual como en Auto-mic, si pasan 8 segundos sin detectar voz, cierra solo sin gastar cuota y reproduce un beep largo y agudo (`assets/beep-error.wav`) para avisarte aunque estés lejos de la pantalla. También suena si la grabación fue muy corta, volvió vacía o hubo error al transcribir.
@@ -67,6 +67,7 @@ Plugin de OpenCode para macOS que brinda una conversación completa ida y vuelta
 - **Ajustes > Auto-mic on / off** (gris apagado, verde prendido en el menú; el estado se guarda en `localStorage`).
 - **Conversación continua manos libres y envío al hilo de origen:** mientras esté en **Auto-mic on**, espera 400 ms tras finalizar la lectura en voz alta de cualquier respuesta (incluso si escribiste por teclado) y vuelve a abrir el micrófono solo hasta que lo apagues, guardando el `sessionID` del hilo que habló para enviar tu respuesta siempre a ese hilo aunque estés mirando otro.
 - **No interrumpe si estás escribiendo:** si detecta que tocaste teclas en los últimos 4 segundos o que ya hay texto escrito en el cuadro del chat, saltea esa tanda sin abrir el popup y mantiene Auto-mic prendido para la siguiente.
+- **Espera a que termine la sesión:** antes de abrir el mic consulta `session.active()` en el servidor dueño del hilo; si la sesión sigue trabajando (por ejemplo, tras un comentario intermedio), no abre y reintenta cada 1 segundo hasta que quede libre, con tope de 2 minutos. Así el mic se abre recién cuando terminó la respuesta completa, no en los textos parciales.
 - **Cierre sin voz:** si pasan 8 segundos sin detectar voz en modo Auto-mic, cierra el popup automáticamente sin transcribir ni consumir cuota.
 - **Comandos de voz `"dejar de escuchar"` / `"deja de escuchar"`:** si la transcripción dice exactamente `"dejar de escuchar"` o `"deja de escuchar"` (sin importar mayúsculas, tildes ni signos de puntuación), reproduce el beep largo (`assets/beep-error.wav`), apaga Auto-mic automáticamente, cierra el dictado sin enviarlo al chat y muestra un aviso en pantalla.
 

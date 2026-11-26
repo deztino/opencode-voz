@@ -17,8 +17,8 @@ type EstadoVoz = "esperando" | "hablando" | "pausa"
 
 const VAD_TICK_MS = 100
 const VAD_CALIBRACION_TICKS = 10
-const VAD_ESTABILIZACION_MS = 250
-const VAD_CALIBRACION_RETRASO_MS = 600
+const VAD_ESTABILIZACION_MS = 500
+const VAD_CALIBRACION_RETRASO_MS = 700
 const VAD_MIN_VOZ_MS = 200
 const VAD_UMBRAL_MIN = 0.006
 const VAD_MULTIPLICADOR_RUIDO = 2.1
@@ -26,7 +26,7 @@ const AUTO_MIC_STORAGE_KEY = "opencode-voz.autoMic"
 const AUTO_MIC_RETRASO_MS = 400
 const AUTO_MIC_PAUSA_TECLADO_MS = 4000
 const AUTO_MIC_SIN_VOZ_MS = 8000
-const AUTO_MIC_ESTABILIZACION_MS = 250
+const AUTO_MIC_ESTABILIZACION_MS = 500
 const AUTO_MIC_UMBRAL_MIN = 0.009
 const AUTO_MIC_MULTIPLICADOR_RUIDO = 2.1
 const AUTO_MIC_MIN_VOZ_MS = 200
@@ -34,7 +34,6 @@ const ESPERA_STORAGE_KEY = "opencode-voz.esperaDictado"
 const ESPERA_DEFECTO_SEG = 5
 const ESPERA_MIN_SEG = 1
 const ESPERA_MAX_SEG = 20
-const AUDIO_UTIL_MS = 400
 
 function leerEsperaSeg(): number {
   try {
@@ -133,6 +132,10 @@ button[title="Grabar mensaje de voz y enviarlo"] {
   border-color: #ef4444 !important;
   box-shadow: inset 0 0 0 1px #ef4444 !important;
 }
+button[aria-label="Grabar mensaje de voz y enviarlo"]:hover,
+button[title="Grabar mensaje de voz y enviarlo"]:hover {
+  background: rgba(220, 38, 38, 0.3) !important;
+}
 button[aria-label="Grabar mensaje de voz y enviarlo"]:active,
 button[title="Grabar mensaje de voz y enviarlo"]:active {
   background: rgba(220, 38, 38, 0.45) !important;
@@ -183,12 +186,15 @@ export default Plugin.define({
     const [dictado, setDictado] = createSignal<EstadoDictado>("libre")
     const [segundos, setSegundos] = createSignal(0)
     const [autoMic, setAutoMic] = createSignal(leerAutoMic())
+    const [pulsoVoz, setPulsoVoz] = createSignal(false)
+    const [sesionesSinVoz, setSesionesSinVoz] = createSignal<ReadonlySet<string>>(new Set())
 
     let grabadora: MediaRecorder | undefined
     let flujoMic: MediaStream | undefined
     let fragmentos: Blob[] = []
     let timerGrabacion: ReturnType<typeof setInterval> | undefined
     let timerAutoMic: ReturnType<typeof setTimeout> | undefined
+    let timerPulso: ReturnType<typeof setInterval> | undefined
     let dialogoAbierto = false
     let detenerActivo: (() => void) | undefined
     let ultimaTeclaEn = 0
@@ -199,6 +205,27 @@ export default Plugin.define({
         timerAutoMic = undefined
       }
     }
+
+    // Hace parpadear el icono de la pill de voz mientras se reproduce audio.
+    createEffect(() => {
+      if (!estado().hablando || estado().pausado) {
+        if (timerPulso) {
+          clearInterval(timerPulso)
+          timerPulso = undefined
+        }
+        setPulsoVoz(false)
+        return
+      }
+      if (!timerPulso) {
+        timerPulso = setInterval(() => setPulsoVoz((valor) => !valor), 1000)
+      }
+      onCleanup(() => {
+        if (timerPulso) {
+          clearInterval(timerPulso)
+          timerPulso = undefined
+        }
+      })
+    })
 
     const teclasIgnoradas = new Set([
       "Shift",
@@ -346,6 +373,21 @@ export default Plugin.define({
     const vozEstado = (server?: Servidor, directory?: string) => {
       const remoto = Boolean(server && !server.builtin)
       return { rpc: remoto ? ctx.client.rpc(Voz) : voz(server), opts: remoto ? undefined : opciones(directory) }
+    }
+
+    const refrescarVozDisponible = async (id: string, server?: Servidor, directory?: string) => {
+      try {
+        const { rpc, opts } = vozEstado(server, directory)
+        const { tiene } = await rpc.tieneVoz({ sessionID: id }, opts)
+        setSesionesSinVoz((previo) => {
+          const nuevo = new Set(previo)
+          if (tiene) nuevo.delete(id)
+          else nuevo.add(id)
+          return nuevo
+        })
+      } catch {
+        // si falla la consulta, dejamos el botón habilitado
+      }
     }
 
     const diagPlugin = (mensaje: string) => {
@@ -725,6 +767,7 @@ export default Plugin.define({
       cerrar: () => void
       nivel: () => number
       segundos: () => number
+      audioUtil: () => boolean
       pausada: () => boolean
       restante: () => number | null
     }
@@ -1218,9 +1261,9 @@ export default Plugin.define({
 
               if (rms > threshold) {
                 speechMs += VAD_TICK_MS
-                if (speechMs >= AUDIO_UTIL_MS) setAudioUtil(true)
                 if (!spoke && speechMs >= minVozMs) {
                   spoke = true
+                  setAudioUtil(true)
                 }
                 if (spoke) {
                   setEstadoVoz("hablando")
@@ -1643,6 +1686,7 @@ export default Plugin.define({
           },
           nivel: () => nivelMic(),
           segundos: () => segundos(),
+          audioUtil: () => audioUtil(),
           pausada: () => grabacionPausada(),
           restante: () => cuentaRestante(),
         }
@@ -1706,7 +1750,7 @@ export default Plugin.define({
         if (actual.hablando) {
           return {
             label: "Pausar voz",
-            icon: "outline-wave-audio",
+            icon: pulsoVoz() ? "waveform" : "outline-wave-audio",
             tone: "success",
             title: "Pausar la lectura en voz alta",
             run: () => {
@@ -1728,6 +1772,13 @@ export default Plugin.define({
             },
           }
         }
+        if (sesionesSinVoz().has(input.session.id)) {
+          return {
+            label: "Voz",
+            icon: "circle-ban-sign",
+            title: "No hay voz grabada para repetir en esta sesión",
+          }
+        }
         return {
           label: "Voz",
           icon: "outline-audio",
@@ -1743,7 +1794,7 @@ export default Plugin.define({
 
     ctx.add(ComposerPill, {
       id: "dictar",
-      order: 20,
+      order: 22,
       show: (): ComposerPillView | undefined => {
         if (apagada()) return undefined
         const actual = dictado()
@@ -1795,7 +1846,7 @@ export default Plugin.define({
 
     ctx.add(ComposerPill, {
       id: "dictado-nivel",
-      order: 21,
+      order: 24,
       show: (): ComposerPillView | undefined => {
         if (dictado() !== "grabando") return undefined
         const nivel = controlDictado?.nivel() ?? 0
@@ -1811,7 +1862,7 @@ export default Plugin.define({
 
     ctx.add(ComposerPill, {
       id: "dictado-pausa",
-      order: 22,
+      order: 20,
       show: (): ComposerPillView | undefined => {
         if (dictado() !== "grabando") return undefined
         const pausada = controlDictado?.pausada() === true
@@ -1826,15 +1877,45 @@ export default Plugin.define({
 
     ctx.add(ComposerPill, {
       id: "dictado-cancelar",
-      order: 23,
+      order: 21,
       show: (): ComposerPillView | undefined => {
-        const actual = dictado()
-        if (actual !== "grabando" && actual !== "confirmar") return undefined
+        if (dictado() !== "grabando") return undefined
         return {
           label: "Cancelar",
           icon: "circle-xmark",
           title: "Descartar la grabación y volver a los botones normales",
           run: () => controlDictado?.cancelar(),
+        }
+      },
+    })
+
+    ctx.add(ComposerPill, {
+      id: "dictado-cancelar-envio",
+      order: 23,
+      show: (): ComposerPillView | undefined => {
+        if (dictado() !== "confirmar") return undefined
+        return {
+          label: "Cancelar",
+          icon: "circle-xmark",
+          title: "Descartar la grabación y volver a los botones normales",
+          run: () => controlDictado?.cancelar(),
+        }
+      },
+    })
+
+    ctx.add(ComposerPill, {
+      id: "dictado-led",
+      order: 23,
+      show: (): ComposerPillView | undefined => {
+        if (dictado() !== "grabando") return undefined
+        const util = controlDictado?.audioUtil() === true
+        return {
+          label: "Audio",
+          icon: util ? "circle-check" : "circle-ban-sign",
+          tone: util ? "success" : "danger",
+          title: util
+            ? "Ya hay audio utilizable para transcribir"
+            : "Todavía no hay audio utilizable para transcribir",
         }
       },
     })
@@ -2033,6 +2114,19 @@ export default Plugin.define({
       bajas = []
     }
 
+    /** Consulta al servidor dueño de la sesión si sigue trabajando (session.active). */
+    const sesionTrabajando = async (id: string, server?: Servidor): Promise<boolean> => {
+      try {
+        const activas = await (server?.client ?? ctx.client).session.active()
+        return activas[id]?.type === "running"
+      } catch (error) {
+        diagPlugin(
+          `autoMic: no se pudo consultar session.active: ${error instanceof Error ? error.message : String(error)}`,
+        )
+        return false
+      }
+    }
+
     /** Programa la reapertura del micrófono tras un turno leído en voz alta. */
     const programarAutoMic = (idEvento?: string, dirEvento?: string, origen = "turno") => {
       const txt = (motivo: string) => `autoMic[${origen}]: ${motivo}`
@@ -2051,20 +2145,33 @@ export default Plugin.define({
       if (apagada() && actual?.id === destinoId) return diagPlugin(txt("sesion apagada"))
       diagPlugin(txt(`programado ${AUTO_MIC_RETRASO_MS}ms sesion=${destinoId}`))
       cancelarTimerAutoMic()
-      timerAutoMic = setTimeout(() => {
-        timerAutoMic = undefined
-        if (desmontado || !autoMic() || dialogoAbierto || dictado() !== "libre") {
-          return diagPlugin(txt(`cancelado en timer estado=${dictado()}`))
-        }
-        if (usuarioEscribiendo()) return diagPlugin(txt("escribiendo en timer"))
-        const ahoraActual = ctx.sessions.current()
-        if (apagada() && ahoraActual?.id === destinoId) return diagPlugin(txt("sesion apagada en timer"))
-        if (estado().hablando || estado().silenciado) {
-          return diagPlugin(txt(`hablando=${estado().hablando} silenciado=${estado().silenciado}`))
-        }
-        diagPlugin(txt("abriendo microfono"))
-        abrirDictado(true, { id: destinoId, directory: destinoDir, server: destinoServer })
-      }, AUTO_MIC_RETRASO_MS)
+      let reintentos = 0
+      const programarIntento = (espera: number) => {
+        timerAutoMic = setTimeout(() => {
+          timerAutoMic = undefined
+          if (desmontado || !autoMic() || dialogoAbierto || dictado() !== "libre") {
+            return diagPlugin(txt(`cancelado en timer estado=${dictado()}`))
+          }
+          if (usuarioEscribiendo()) return diagPlugin(txt("escribiendo en timer"))
+          const ahoraActual = ctx.sessions.current()
+          if (apagada() && ahoraActual?.id === destinoId) return diagPlugin(txt("sesion apagada en timer"))
+          if (estado().hablando || estado().silenciado) {
+            return diagPlugin(txt(`hablando=${estado().hablando} silenciado=${estado().silenciado}`))
+          }
+          void (async () => {
+            if (await sesionTrabajando(destinoId, destinoServer)) {
+              reintentos += 1
+              if (reintentos > 120) return diagPlugin(txt("sesion sigue trabajando, desisto"))
+              diagPlugin(txt(`sesion trabajando, reintento ${reintentos} en 1s`))
+              programarIntento(1000)
+              return
+            }
+            diagPlugin(txt("abriendo microfono"))
+            abrirDictado(true, { id: destinoId, directory: destinoDir, server: destinoServer })
+          })()
+        }, espera)
+      }
+      programarIntento(AUTO_MIC_RETRASO_MS)
     }
 
     // Se suscribe al servidor de la sesión montada: en remoto, el servidor local de la app
@@ -2186,6 +2293,14 @@ export default Plugin.define({
     createEffect(() => {
       const id = ctx.sessions.current()?.id
       if (id) void refrescarApagada()
+    })
+
+    // Consulta al plugin local si quedó voz para repetir al cambiar de sesión
+    // y al arrancar/terminar una lectura.
+    createEffect(() => {
+      const sesion = ctx.sessions.current()
+      void estado().hablando
+      if (sesion?.id) void refrescarVozDisponible(sesion.id, sesion.server, sesion.directory)
     })
 
     const sondeo = setInterval(() => {
