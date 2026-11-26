@@ -1466,6 +1466,7 @@ export default Plugin.define({
       | undefined
     let avisarLecturaTerminada: (() => void) | undefined
     let avisarTurnoTerminado: ((sessionID?: string) => void) | undefined
+    let avisarTextoParaLeer: ((texto: string, sessionID?: string) => void) | undefined
 
     function cancelarAutoEscucha() {
       turnoFueDictado = false
@@ -1930,6 +1931,8 @@ export default Plugin.define({
 
     function encolarFragmento(text: string, sessionID?: string, forzar = false) {
       if ((muted || sesionApagada(sessionID ?? sesionActiva) || dictandoEnCurso()) && !forzar) return
+      // En Linux no hay say ni AVFoundation: el texto se lee en la máquina del usuario.
+      if (process.platform !== "darwin") avisarTextoParaLeer?.(text, sessionID)
       const gen = generation
       const turno = turnoActivo
       const guardarEnUltimo = Boolean(sessionID)
@@ -2448,6 +2451,14 @@ export default Plugin.define({
         listarVocabulario: async () => {
           return { terminos: cargarVocabulario(), ruta: rutaVocabulario() }
         },
+        leerTexto: async (input) => {
+          const { texto, sessionID } = (input ?? {}) as { texto?: string; sessionID?: string }
+          const limpio = texto?.trim() ?? ""
+          if (limpio && !muted && !sesionActualApagada() && !dictandoEnCurso()) {
+            encolarFragmento(limpio, sessionID, true)
+          }
+          return estadoActual()
+        },
         estadoDictado: async (input) => {
           const { activo } = input as { activo: boolean }
           guardarEstadoDictando(activo)
@@ -2467,6 +2478,9 @@ export default Plugin.define({
       }
       avisarTurnoTerminado = (sessionID?: string) => {
         void registro.events.emit("turnoTerminado", sessionID ? { sessionID } : {})
+      }
+      avisarTextoParaLeer = (texto, sessionID) => {
+        void registro.events.emit("textoParaLeer", sessionID ? { texto, sessionID } : { texto })
       }
     } catch (error) {
       console.error("voz: no se pudo registrar el puente con la parte gráfica", error)
@@ -2644,6 +2658,7 @@ export default Plugin.define({
       avisar = undefined
       avisarLecturaTerminada = undefined
       avisarTurnoTerminado = undefined
+      avisarTextoParaLeer = undefined
       cancelarAutoEscucha()
       finalizarEjecucion()
       stopSpeaking()

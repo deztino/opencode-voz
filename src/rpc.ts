@@ -119,6 +119,17 @@ const DICTADO_ESTADO = {
   additionalProperties: false,
 } as const
 
+/** Texto que un servidor remoto manda leer en la máquina del usuario. */
+const TEXTO_PARA_LEER = {
+  type: "object",
+  properties: {
+    texto: { type: "string" },
+    sessionID: { type: "string" },
+  },
+  required: ["texto"],
+  additionalProperties: false,
+} as const
+
 /** Datos del turno terminado, incluyendo el hilo que habló. */
 const TURNO_TERMINADO = {
   type: "object",
@@ -177,6 +188,8 @@ export const Voz = Rpc.define({
     listarVocabulario: { input: VACIO, output: VOCAB_LISTA },
     /** Indica al servidor si el dictado está abierto para bloquear lectura y avisos. */
     estadoDictado: { input: DICTADO_ESTADO, output: ESTADO },
+    /** Lee en voz alta en esta máquina un texto que mandó un servidor remoto. */
+    leerTexto: { input: TEXTO_PARA_LEER, output: ESTADO },
   },
   events: {
     /** Avisa a la parte gráfica cada vez que cambia el estado. */
@@ -185,5 +198,7 @@ export const Voz = Rpc.define({
     lecturaTerminada: { schema: VACIO },
     /** Avisa cuando el asistente terminó de responder y de leer en voz alta un turno. */
     turnoTerminado: { schema: TURNO_TERMINADO },
+    /** Pide a la parte gráfica que lea un texto en la máquina del usuario. */
+    textoParaLeer: { schema: TEXTO_PARA_LEER },
   },
 })

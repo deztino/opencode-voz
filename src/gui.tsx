@@ -11,7 +11,7 @@ type Estado = {
   eco?: boolean
   concurrencia?: "cortar" | "esperar"
 }
-type EstadoDictado = "libre" | "grabando" | "transcribiendo"
+type EstadoDictado = "libre" | "grabando" | "transcribiendo" | "confirmar"
 type FasePopup = "abriendo" | "grabando" | "transcribiendo" | "confirmar" | "error"
 type EstadoVoz = "esperando" | "hablando" | "pausa"
 
@@ -99,6 +99,33 @@ body:has(.opencode-voz-dictado) [data-slot="dialog-overlay"],
 body:has(.opencode-voz-dictado) [data-component="dialog-overlay"] {
   background: transparent !important;
   backdrop-filter: none !important;
+  pointer-events: none !important;
+}
+/* El velo y la capa del diálogo dejan pasar la rueda del mouse hacia la charla. */
+body:has(.opencode-voz-dictado) [data-dialog-layer] {
+  pointer-events: none !important;
+}
+body:has(.opencode-voz-dictado) [data-slot="dialog-container"] {
+  pointer-events: auto !important;
+}
+/* Popup compacto: menos alto para poder leer la charla de arriba mientras se dicta. */
+body:has(.opencode-voz-dictado) [data-slot="dialog-header"] {
+  padding: 6px 12px 0 !important;
+  gap: 2px !important;
+}
+body:has(.opencode-voz-dictado) [data-slot="dialog-description"] {
+  display: none !important;
+}
+body:has(.opencode-voz-dictado) [data-slot="dialog-content"] {
+  padding: 2px 12px !important;
+}
+body:has(.opencode-voz-dictado) [data-slot="dialog-footer"] {
+  margin-top: 0 !important;
+  padding: 2px 12px 8px !important;
+}
+.opencode-voz-dictado-grabando > div {
+  padding: 5px 2px !important;
+  gap: 6px !important;
 }
 button[aria-label="Grabar mensaje de voz y enviarlo"],
 button[title="Grabar mensaje de voz y enviarlo"] {
@@ -259,12 +286,50 @@ export default Plugin.define({
       enfocarCuadroTexto()
     }
 
-    const voz = () => ctx.client.rpc(Voz)
+    type Servidor = NonNullable<ReturnType<typeof ctx.sessions.current>>["server"]
+
+    /**
+     * Cliente del servidor dueño de la sesión. `ctx.client` es el servidor local de la app:
+     * en remoto no conoce las carpetas del servidor y responde "Location not found".
+     */
+    const voz = (server?: Servidor) => ((server ?? ctx.sessions.current()?.server)?.client ?? ctx.client).rpc(Voz)
     const carpetaActual = () => ctx.sessions.current()?.directory
     const opciones = (directory?: string) => {
       const dir = directory ?? carpetaActual()
       return dir ? { location: { directory: dir } } : undefined
     }
+
+    /**
+     * El dictado en remoto se transcribe en esta máquina, donde están las claves de
+     * ElevenLabs y Groq: el servidor remoto puede no tenerlas. Si acá no está el
+     * plugin, prueba en el servidor de la sesión.
+     */
+    const transcribirDictado = async (
+      server: Servidor,
+      directory: string | undefined,
+      audioBase64: string,
+      mimeType: string,
+    ): Promise<{ text: string; error?: string }> => {
+      if (!server.builtin) {
+        try {
+          return (await ctx.client.rpc(Voz).transcribir({ audioBase64, mimeType })) as {
+            text: string
+            error?: string
+          }
+        } catch {
+          // sin plugin local: sigue con el servidor de la sesión
+        }
+      }
+      return (await voz(server).transcribir({ audioBase64, mimeType }, opciones(directory))) as {
+        text: string
+        error?: string
+      }
+    }
+
+    /** Los sonidos tienen que salir por los parlantes de esta máquina, no por el servidor remoto. */
+    const vozSonido = (server: Servidor) => (server.builtin ? voz(server) : ctx.client.rpc(Voz))
+    const opcionesSonido = (server: Servidor, directory?: string) =>
+      server.builtin ? opciones(directory) : undefined
 
     const [apagada, setApagada] = createSignal(false)
 
@@ -573,6 +638,85 @@ export default Plugin.define({
       server: NonNullable<ReturnType<typeof ctx.sessions.current>>["server"]
     }
 
+    type ControlDictado = {
+      detener: () => void
+      cancelar: () => void
+      pausar: () => void
+      cancelarEnvio: () => void
+      enviarAhora: () => void
+      cerrar: () => void
+      nivel: () => number
+      segundos: () => number
+      pausada: () => boolean
+      restante: () => number | null
+    }
+    let controlDictado: ControlDictado | undefined
+    let textoPrevio = ""
+    let textoPegado = ""
+    let textoVisto = false
+
+    const [cuentaRestante, setCuentaRestante] = createSignal<number | null>(null)
+    let timerCuenta: ReturnType<typeof setInterval> | undefined
+    const pararCuenta = () => {
+      if (timerCuenta) {
+        clearInterval(timerCuenta)
+        timerCuenta = undefined
+      }
+      setCuentaRestante(null)
+    }
+    const iniciarCuenta = () => {
+      pararCuenta()
+      const seg = Math.max(2, leerEsperaSeg())
+      setCuentaRestante(seg)
+      timerCuenta = setInterval(() => {
+        const actual = cuentaRestante()
+        if (actual === null) {
+          pararCuenta()
+          return
+        }
+        if (actual <= 1) {
+          pararCuenta()
+          controlDictado?.enviarAhora()
+          return
+        }
+        setCuentaRestante(actual - 1)
+      }, 1000)
+    }
+
+    const cancelarCuentaEnCompositor = (e: Event) => {
+      if (dictado() !== "confirmar" || cuentaRestante() === null) return
+      const composer = document.querySelector<HTMLElement>('[data-component="composer"]')
+      if (composer && e.target instanceof Node && composer.contains(e.target)) pararCuenta()
+    }
+    window.addEventListener("pointerdown", cancelarCuentaEnCompositor, true)
+    window.addEventListener("keydown", cancelarCuentaEnCompositor, true)
+
+    const ponerTextoEnCompositor = (texto: string, destino: DestinoDictado) => {
+      const composer =
+        ctx.sessions.current()?.id === destino.id ? ctx.screen.current()?.composer : undefined
+      textoPrevio = composer?.text() ?? ""
+      textoPegado = texto
+      textoVisto = false
+      composer?.setText(texto)
+    }
+
+    createEffect(() => {
+      const actual = ctx.screen.current()?.composer.text()
+      if (dictado() !== "confirmar" || actual === undefined || !textoPegado) return
+      const limpio = actual.trim()
+      if (limpio === textoPegado.trim()) {
+        textoVisto = true
+        return
+      }
+      // El setText se aplica en cola: no reaccionamos hasta ver el texto pegado.
+      if (!textoVisto) return
+      if (limpio === "") {
+        controlDictado?.cerrar()
+      } else {
+        controlDictado?.cancelarEnvio()
+      }
+    })
+
     const abrirDictado = (modoAuto = false, destino?: DestinoDictado) => {
       const actual = ctx.sessions.current()
       if (apagada() && (!destino || actual?.id === destino.id)) {
@@ -595,7 +739,7 @@ export default Plugin.define({
       // Corta la voz del asistente y pide el micrófono primero en silencio; recién cuando está listo
       // abre el popup y suena el beep para que empiece a grabar sin demora al terminar el sonido.
       const avisarDictado = (activo: boolean) =>
-        voz()
+        voz(session.server)
           .estadoDictado({ activo }, opciones(session.directory))
           .then((res) => setEstado(res as Estado))
           .catch(() => {})
@@ -787,6 +931,101 @@ export default Plugin.define({
           }
         }
 
+        const encontrarTarjeta = (): HTMLElement | undefined =>
+          contenedor?.closest<HTMLElement>('[data-slot="dialog-container"]') ?? undefined
+
+        /** Deja el popup pegado arriba del cuadro donde se escribe el mensaje. */
+        const colocarSobreComposer = () => {
+          const tarjeta = encontrarTarjeta()
+          if (!tarjeta) return
+          tarjeta.style.translate = ""
+          const rect = tarjeta.getBoundingClientRect()
+          const composer = document.querySelector<HTMLElement>(
+            '[data-component="composer"], [data-component="session-composer-dock"], [data-component="dock-prompt"]',
+          )
+          const c = composer?.getBoundingClientRect()
+          const borde = c && c.top > 80 ? c.top - 10 : window.innerHeight - 150
+          tarjeta.style.translate = `0px ${Math.round(borde - rect.bottom)}px`
+        }
+
+        // La capa del diálogo ya deja pasar el scroll; esto evita que un clic afuera lo cierre.
+        const evitarCierre = (e: Event) => {
+          if (!contenedor) return
+          const tarjeta = encontrarTarjeta()
+          if (!tarjeta || (e.target instanceof Node && tarjeta.contains(e.target))) return
+          e.stopPropagation()
+          if (e instanceof MouseEvent) e.preventDefault()
+        }
+        window.addEventListener("pointerdown", evitarCierre, true)
+        window.addEventListener("mousedown", evitarCierre, true)
+        window.addEventListener("click", evitarCierre, true)
+
+        // El modal de la app se come la rueda y las flechas: se las pasamos al scroll de la charla.
+        let chatScroll: HTMLElement | undefined
+        const contenedorChat = (): HTMLElement | undefined => {
+          if (chatScroll?.isConnected) return chatScroll
+          let mejor: HTMLElement | undefined
+          for (const el of document.querySelectorAll<HTMLElement>("*")) {
+            if (el.closest('[data-slot="dialog-container"]')) continue
+            const rect = el.getBoundingClientRect()
+            if (rect.width < 300 || rect.height < 200) continue
+            const overflow = window.getComputedStyle(el).overflowY
+            if (overflow !== "auto" && overflow !== "scroll") continue
+            if (el.scrollHeight <= el.clientHeight + 8) continue
+            if (!mejor || el.scrollHeight > mejor.scrollHeight) mejor = el
+          }
+          chatScroll = mejor
+          return mejor
+        }
+        const alRueda = (e: WheelEvent) => {
+          if (!contenedor) return
+          const tarjeta = encontrarTarjeta()
+          if (tarjeta && e.target instanceof Node && tarjeta.contains(e.target)) return
+          const chat = contenedorChat()
+          if (!chat) return
+          e.preventDefault()
+          chat.scrollTop += e.deltaY
+        }
+        const alFlecha = (e: KeyboardEvent) => {
+          if (!contenedor) return
+          if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return
+          const tarjeta = encontrarTarjeta()
+          if (
+            tarjeta &&
+            e.target instanceof HTMLElement &&
+            tarjeta.contains(e.target) &&
+            e.target.matches("textarea, input, [contenteditable='true']")
+          ) {
+            return
+          }
+          const chat = contenedorChat()
+          if (!chat) return
+          e.preventDefault()
+          e.stopPropagation()
+          chat.scrollTop += e.key === "ArrowDown" ? 80 : -80
+        }
+        window.addEventListener("wheel", alRueda, { capture: true, passive: false })
+        window.addEventListener("keydown", alFlecha, true)
+        const alRedimensionar = () => {
+          chatScroll = undefined
+          requestAnimationFrame(colocarSobreComposer)
+        }
+        onCleanup(() => {
+          window.removeEventListener("pointerdown", evitarCierre, true)
+          window.removeEventListener("mousedown", evitarCierre, true)
+          window.removeEventListener("click", evitarCierre, true)
+          window.removeEventListener("wheel", alRueda, true)
+          window.removeEventListener("keydown", alFlecha, true)
+          window.removeEventListener("resize", alRedimensionar)
+          encontrarTarjeta()?.style.removeProperty("translate")
+        })
+
+        createEffect(() => {
+          fase()
+          requestAnimationFrame(colocarSobreComposer)
+          setTimeout(colocarSobreComposer, 40)
+        })
+
         createEffect(() => {
           fase()
           const alphaFondo = 0.72
@@ -899,7 +1138,7 @@ export default Plugin.define({
                 }
                 setEsperaSinVozMs(transcurrido)
                 if (transcurrido >= AUTO_MIC_SIN_VOZ_MS) {
-                  void voz().sonidoSinVoz({}, opciones(session.directory)).catch(() => {})
+                  void vozSonido(session.server).sonidoSinVoz({}, opcionesSonido(session.server, session.directory)).catch(() => {})
                   cancelar()
                 }
                 return
@@ -955,20 +1194,25 @@ export default Plugin.define({
         const enviar = () => {
           if (cancelado || cerrado) return
           pausarAutoEnvio()
-          const limpio = texto().trim()
+          pararCuenta()
+          const composer =
+            ctx.sessions.current()?.id === session.id ? ctx.screen.current()?.composer : undefined
+          const limpio = (composer?.text() ?? texto()).trim()
           if (!limpio) return
+          setDictado("libre")
           cerrarDialogo(false)
+          if (composer) composer.setText(textoPrevio)
           void (async () => {
             try {
               await Promise.race([
                 Promise.all([
                   avisarDictado(false),
-                  voz().marcarDictado({}, opciones(session.directory)).catch(() => {}),
+                  voz(session.server).marcarDictado({}, opciones(session.directory)).catch(() => {}),
                 ]),
                 new Promise((r) => setTimeout(r, 250)),
               ])
               await session.server.client.session.prompt({ sessionID: session.id, text: limpio })
-              void voz().sonidoEnvio({}, opciones(session.directory)).catch(() => {})
+              void vozSonido(session.server).sonidoEnvio({}, opcionesSonido(session.server, session.directory)).catch(() => {})
             } catch (error) {
               const msg = error instanceof Error ? error.message : String(error)
               ctx.toast.show({ title: "Error al enviar el dictado", description: msg, variant: "error" })
@@ -997,6 +1241,11 @@ export default Plugin.define({
           cancelado = true
           setGrabacionPausada(false)
           pausarAutoEnvio()
+          if (dictado() === "confirmar") {
+            const composer =
+              ctx.sessions.current()?.id === session.id ? ctx.screen.current()?.composer : undefined
+            if (composer && composer.text() === textoPegado) composer.setText(textoPrevio)
+          }
           detenerVad()
           try {
             if (grabadora && grabadora.state !== "inactive") grabadora.stop()
@@ -1038,7 +1287,7 @@ export default Plugin.define({
           try {
             if (grabadora && grabadora.state !== "inactive") {
               grabadora.stop()
-              void voz().sonidoFinGrabacion({}, opciones(session.directory)).catch(() => {})
+              void vozSonido(session.server).sonidoFinGrabacion({}, opcionesSonido(session.server, session.directory)).catch(() => {})
             } else {
               cancelar()
             }
@@ -1071,7 +1320,7 @@ export default Plugin.define({
         const transcribirBlob = async (blob: Blob, mimeType: string) => {
           if (cancelado) return
           if (blob.size < 200) {
-            void voz().sonidoSinVoz({}, opciones(session.directory)).catch(() => {})
+            void vozSonido(session.server).sonidoSinVoz({}, opcionesSonido(session.server, session.directory)).catch(() => {})
             setDictado("libre")
             cerrarDialogo()
             ctx.toast.show({ title: "Grabación demasiado corta", variant: "default" })
@@ -1082,51 +1331,43 @@ export default Plugin.define({
           try {
             const audioBase64 = await blobABase64(blob)
             if (cancelado) return
-            const res = (await voz().transcribir({ audioBase64, mimeType }, opciones(session.directory))) as {
-              text: string
-              error?: string
-            }
+            const res = await transcribirDictado(session.server, session.directory, audioBase64, mimeType)
             if (cancelado) return
             if (res.error) {
-              void voz().sonidoSinVoz({}, opciones(session.directory)).catch(() => {})
+              void vozSonido(session.server).sonidoSinVoz({}, opcionesSonido(session.server, session.directory)).catch(() => {})
               setDictado("libre")
-              setMensajeError(res.error)
-              setFase("error")
+              cerrarDialogo()
+              ctx.toast.show({ title: "No se pudo transcribir el audio", description: res.error, variant: "error" })
               return
             }
             const limpio = res.text.trim()
             if (!limpio) {
-              void voz().sonidoSinVoz({}, opciones(session.directory)).catch(() => {})
+              void vozSonido(session.server).sonidoSinVoz({}, opcionesSonido(session.server, session.directory)).catch(() => {})
               setDictado("libre")
               cerrarDialogo()
               ctx.toast.show({ title: "No se escuchó texto para enviar", variant: "default" })
               return
             }
             if (esComandoDejarDeEscuchar(limpio)) {
-              void voz().sonidoSinVoz({}, opciones(session.directory)).catch(() => {})
+              void vozSonido(session.server).sonidoSinVoz({}, opcionesSonido(session.server, session.directory)).catch(() => {})
               desactivarAutoMic()
               setDictado("libre")
               cerrarDialogo()
               ctx.toast.show({ title: "Auto-mic desactivado", variant: "default" })
               return
             }
-            setDictado("libre")
             setTexto(limpio)
             setFase("confirmar")
-            iniciarAutoEnvio()
-            setTimeout(() => {
-              if (!area || cancelado || cerrado) return
-              area.focus()
-              const fin = area.value.length
-              area.setSelectionRange(fin, fin)
-            }, 0)
+            setDictado("confirmar")
+            ponerTextoEnCompositor(limpio, session)
+            iniciarCuenta()
           } catch (error) {
             if (cancelado) return
-            void voz().sonidoSinVoz({}, opciones(session.directory)).catch(() => {})
+            void vozSonido(session.server).sonidoSinVoz({}, opcionesSonido(session.server, session.directory)).catch(() => {})
             setDictado("libre")
             const msg = error instanceof Error ? error.message : String(error)
-            setMensajeError(msg)
-            setFase("error")
+            cerrarDialogo()
+            ctx.toast.show({ title: "No se pudo transcribir el audio", description: msg, variant: "error" })
           }
         }
 
@@ -1136,7 +1377,7 @@ export default Plugin.define({
               flujoMic = streamListo
               fragmentos = []
               await Promise.race([
-                voz().sonidoInicioDictado({}, opciones(session.directory)).catch(() => {}),
+                vozSonido(session.server).sonidoInicioDictado({}, opcionesSonido(session.server, session.directory)).catch(() => {}),
                 new Promise((r) => setTimeout(r, 900)),
               ])
               if (cancelado || cerrado) {
@@ -1274,222 +1515,27 @@ export default Plugin.define({
           guardarEsperaSeg(valor)
         }
 
-        return (
-          <ctx.ui.Dialog
-            title={titulo()}
-            description={descripcion()}
-            footer={
-              <div style={{ display: "flex", gap: "8px", "justify-content": "flex-end" }}>
-                <Show when={fase() === "error"}>
-                  <ctx.ui.Button
-                    variant="neutral"
-                    onClick={() => {
-                      void ctx.system.copy(mensajeError())
-                      ctx.toast.show({ title: "Error copiado al portapapeles", variant: "success" })
-                    }}
-                  >
-                    Copiar error
-                  </ctx.ui.Button>
-                </Show>
-                <ctx.ui.Button variant={fase() === "error" ? "contrast" : "neutral"} onClick={cancelar}>
-                  {fase() === "error" ? "Cerrar" : "Cancelar"}
-                </ctx.ui.Button>
-                <Show when={fase() === "grabando"}>
-                  <ctx.ui.Button variant="neutral" onClick={alternarPausaGrabacion}>
-                    {grabacionPausada() ? "Reanudar" : "Pausar"}
-                  </ctx.ui.Button>
-                </Show>
-                <Show when={fase() === "abriendo" || fase() === "grabando"}>
-                  <ctx.ui.Button variant="contrast" autofocus onClick={detenerYTranscribir}>
-                    Detener y transcribir
-                  </ctx.ui.Button>
-                </Show>
-                <Show when={fase() === "confirmar"}>
-                  <ctx.ui.Button variant="contrast" disabled={!texto().trim()} onClick={enviar}>
-                    {restante() !== null ? `Enviar (${restante()}s)` : "Enviar"}
-                  </ctx.ui.Button>
-                </Show>
-              </div>
-            }
-          >
-            <div
-              ref={contenedor}
-              class={fase() === "grabando" ? "opencode-voz-dictado opencode-voz-dictado-grabando" : "opencode-voz-dictado"}
-            >
-            <Show when={fase() === "abriendo" || fase() === "transcribiendo"}>
-              <div style={{ display: "flex", "align-items": "center", gap: "10px", padding: "14px 2px" }}>
-                <ctx.ui.Loader />
-                <span>{fase() === "abriendo" ? "Activando micrófono…" : "Transcribiendo tu voz…"}</span>
-              </div>
-            </Show>
-            <Show when={fase() === "grabando"}>
-              <div style={{ display: "flex", "flex-direction": "column", gap: "10px", padding: "14px 2px" }}>
-                <div style={{ display: "flex", "align-items": "center", gap: "10px" }}>
-                  <span
-                    class="opencode-voz-dot"
-                    style={grabacionPausada() ? { animation: "none", background: "#f59e0b" } : undefined}
-                  />
-                  <span>{textoEstadoVoz()}</span>
-                  <div style={{ "margin-left": "auto", display: "flex", "align-items": "center", gap: "10px" }}>
-                    <span
-                      role="status"
-                      aria-label={audioUtil() ? "Audio utilizable" : "Sin audio utilizable"}
-                      title={
-                        audioUtil()
-                          ? "Ya hay al menos 1 segundo de voz utilizable"
-                          : "Todavía no hay 1 segundo de voz utilizable"
-                      }
-                      style={{
-                        width: "10px",
-                        height: "10px",
-                        "border-radius": "9999px",
-                        background: audioUtil() ? "#22c55e" : "#ef4444",
-                        "box-shadow": audioUtil() ? "0 0 6px rgba(34, 197, 94, 0.7)" : "none",
-                        transition: "background 150ms linear",
-                      }}
-                    />
-                    <div
-                      title="Segundos de espera de silencio y de la cuenta regresiva de envío"
-                      style={{
-                        display: "flex",
-                        "align-items": "center",
-                        gap: "2px",
-                        padding: "1px 4px",
-                        "border-radius": "6px",
-                        border: "1px solid rgba(128, 128, 128, 0.35)",
-                      }}
-                    >
-                      <button
-                        type="button"
-                        aria-label="Aumentar segundos de espera"
-                        onClick={subirEspera}
-                        style={{
-                          background: "transparent",
-                          border: "none",
-                          padding: "0 2px",
-                          cursor: "pointer",
-                          color: "inherit",
-                          "font-size": "9px",
-                          "line-height": "1",
-                        }}
-                      >
-                        ▲
-                      </button>
-                      <span
-                        style={{
-                          "font-variant-numeric": "tabular-nums",
-                          "font-size": "12px",
-                          "min-width": "24px",
-                          "text-align": "center",
-                        }}
-                      >
-                        {esperaSeg()}s
-                      </span>
-                      <button
-                        type="button"
-                        aria-label="Reducir segundos de espera"
-                        onClick={bajarEspera}
-                        style={{
-                          background: "transparent",
-                          border: "none",
-                          padding: "0 2px",
-                          cursor: "pointer",
-                          color: "inherit",
-                          "font-size": "9px",
-                          "line-height": "1",
-                        }}
-                      >
-                        ▼
-                      </button>
-                    </div>
-                    <strong style={{ "font-variant-numeric": "tabular-nums" }}>
-                      {formatoSegundos(segundos())}
-                    </strong>
-                  </div>
-                </div>
-                <div
-                  aria-hidden="true"
-                  style={{
-                    width: "100%",
-                    height: "6px",
-                    "border-radius": "9999px",
-                    background: "rgba(128, 128, 128, 0.25)",
-                    overflow: "hidden",
-                  }}
-                >
-                  <div
-                    style={{
-                      width: `${nivelMic()}%`,
-                      height: "100%",
-                      "border-radius": "9999px",
-                      background: grabacionPausada() ? "#f59e0b" : estadoVoz() === "hablando" ? "#22c55e" : "#ef4444",
-                      transition: "width 60ms linear",
-                    }}
-                  />
-                </div>
-              </div>
-            </Show>
-            <Show when={fase() === "error"}>
-              <pre
-                style={{
-                  margin: "0",
-                  padding: "10px",
-                  "border-radius": "6px",
-                  border: "1px solid currentColor",
-                  "white-space": "pre-wrap",
-                  "word-break": "break-word",
-                  "user-select": "text",
-                  "font-size": "12px",
-                  "line-height": "1.45",
-                }}
-              >
-                {mensajeError()}
-              </pre>
-            </Show>
-            <Show when={fase() === "confirmar"}>
-              <textarea
-                ref={area}
-                aria-label="Texto dictado"
-                value={texto()}
-                onInput={(e) => {
-                  pausarAutoEnvio()
-                  setTexto(e.currentTarget.value)
-                }}
-                onMouseDown={() => pausarAutoEnvio()}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
-                    e.preventDefault()
-                    enviar()
-                    return
-                  }
-                  if (e.key === "Escape") {
-                    e.preventDefault()
-                    cancelar()
-                    return
-                  }
-                  if (!modificadoras.has(e.key)) {
-                    pausarAutoEnvio()
-                  }
-                }}
-                style={{
-                  width: "100%",
-                  "min-height": "110px",
-                  resize: "vertical",
-                  padding: "10px",
-                  "border-radius": "6px",
-                  border: "1px solid currentColor",
-                  background: "transparent",
-                  color: "inherit",
-                  font: "inherit",
-                  "line-height": "1.45",
-                  "box-sizing": "border-box",
-                  outline: "none",
-                }}
-              />
-            </Show>
-            </div>
-          </ctx.ui.Dialog>
-        )
+        controlDictado = {
+          detener: detenerYTranscribir,
+          cancelar,
+          pausar: alternarPausaGrabacion,
+          cancelarEnvio: () => {
+            pausarAutoEnvio()
+            setRestante(null)
+            pararCuenta()
+          },
+          enviarAhora: () => enviar(),
+          cerrar: () => {
+            setDictado("libre")
+            cerrarDialogo()
+          },
+          nivel: () => nivelMic(),
+          segundos: () => segundos(),
+          pausada: () => grabacionPausada(),
+          restante: () => cuentaRestante(),
+        }
+
+        return <div class="opencode-voz-dictado" style={{ display: "none" }} />
       })
         })
       })()
@@ -1508,6 +1554,7 @@ export default Plugin.define({
       id: "voz-on-off",
       order: 5,
       show: (input): ComposerPillView => {
+        if (dictado() !== "libre") return undefined
         const off = apagada()
         return {
           label: off ? "Voz OFF" : "Voz ON",
@@ -1529,7 +1576,7 @@ export default Plugin.define({
       id: "voz",
       order: 10,
       show: (input): ComposerPillView | undefined => {
-        if (apagada()) return undefined
+        if (apagada() || dictado() !== "libre") return undefined
         const actual = estado()
         if (actual.hablando && actual.pausado) {
           return {
@@ -1594,7 +1641,7 @@ export default Plugin.define({
             icon: "stop",
             tone: "danger",
             title: "Frenar la grabación y enviar el mensaje",
-            run: alternarDictado,
+            run: () => controlDictado?.detener(),
           }
         }
         if (actual === "transcribiendo") {
@@ -1603,6 +1650,25 @@ export default Plugin.define({
             icon: "outline-wave-audio",
             tone: "warning",
             title: "Transcribiendo el audio",
+          }
+        }
+        if (actual === "confirmar") {
+          const restante = cuentaRestante()
+          if (restante === null || restante === undefined) {
+            return {
+              label: "Enviar ahora",
+              icon: "outline-audio",
+              tone: "success",
+              title: "Enviar el texto que dejaste en el compositor",
+              run: () => controlDictado?.enviarAhora(),
+            }
+          }
+          return {
+            label: `Enviar en ${restante}s`,
+            icon: "outline-audio",
+            tone: "warning",
+            title: "Tocá para cancelar el envío automático y editar el texto",
+            run: () => controlDictado?.cancelarEnvio(),
           }
         }
         return {
@@ -1616,10 +1682,56 @@ export default Plugin.define({
     })
 
     ctx.add(ComposerPill, {
+      id: "dictado-nivel",
+      order: 21,
+      show: (): ComposerPillView | undefined => {
+        if (dictado() !== "grabando") return undefined
+        const nivel = controlDictado?.nivel() ?? 0
+        const encendidos = Math.max(0, Math.min(8, Math.round((nivel / 100) * 8)))
+        const barra = "█".repeat(encendidos) + "░".repeat(8 - encendidos)
+        return {
+          label: `${barra} ${formatoSegundos(controlDictado?.segundos() ?? 0)}`,
+          icon: "outline-wave-audio",
+          title: "Nivel del micrófono y tiempo de grabación",
+        }
+      },
+    })
+
+    ctx.add(ComposerPill, {
+      id: "dictado-pausa",
+      order: 22,
+      show: (): ComposerPillView | undefined => {
+        if (dictado() !== "grabando") return undefined
+        const pausada = controlDictado?.pausada() === true
+        return {
+          label: pausada ? "Reanudar" : "Pausar",
+          icon: pausada ? "fill-triangle-down" : "dash",
+          title: pausada ? "Seguir grabando" : "Pausar la grabación",
+          run: () => controlDictado?.pausar(),
+        }
+      },
+    })
+
+    ctx.add(ComposerPill, {
+      id: "dictado-cancelar",
+      order: 23,
+      show: (): ComposerPillView | undefined => {
+        const actual = dictado()
+        if (actual !== "grabando" && actual !== "confirmar") return undefined
+        return {
+          label: "Cancelar",
+          icon: "circle-xmark",
+          title: "Descartar la grabación y volver a los botones normales",
+          run: () => controlDictado?.cancelar(),
+        }
+      },
+    })
+
+    ctx.add(ComposerPill, {
       id: "auto-mic",
       order: 30,
       show: (): ComposerPillView | undefined => {
-        if (apagada()) return undefined
+        if (apagada() || dictado() !== "libre") return undefined
         if (autoMic()) {
           return {
             label: "Auto-mic on",
@@ -1642,7 +1754,7 @@ export default Plugin.define({
       id: "genero-voz",
       order: 40,
       show: (input): ComposerPillView | undefined => {
-        if (apagada()) return undefined
+        if (apagada() || dictado() !== "libre") return undefined
         const esMasc = estado().genero === "masc"
         return {
           label: esMasc ? "Masc" : "Fem",
@@ -1664,7 +1776,7 @@ export default Plugin.define({
       id: "motor-dictado",
       order: 50,
       show: (input): ComposerPillView | undefined => {
-        if (apagada()) return undefined
+        if (apagada() || dictado() !== "libre") return undefined
         const actual = estado().motor ?? "auto"
         const label = actual === "elevenlabs" ? "Eleven" : actual === "groq" ? "Groq" : "Auto"
         const title =
@@ -1691,7 +1803,7 @@ export default Plugin.define({
       id: "eco-voz",
       order: 55,
       show: (input): ComposerPillView | undefined => {
-        if (apagada()) return undefined
+        if (apagada() || dictado() !== "libre") return undefined
         const activo = estado().eco !== false
         return {
           label: "Eco",
@@ -1802,41 +1914,78 @@ export default Plugin.define({
       },
     }))
 
-    let baja: (() => void) | undefined
-    let bajaTurno: (() => void) | undefined
-    try {
-      baja = voz().events.on("estado", (evento) => {
-        const dir = carpetaActual()
-        if (dir && evento.location?.directory && evento.location.directory !== dir) return
-        setEstado(evento.data as Estado)
-      })
-      bajaTurno = voz().events.on("turnoTerminado", (evento) => {
-        if (desmontado || !autoMic() || dialogoAbierto || dictado() !== "libre") return
-        if (usuarioEscribiendo()) return
-        const data = (evento.data ?? {}) as { sessionID?: string }
-        const idEvento = data.sessionID
-        const dirEvento = evento.location?.directory
-        const actual = ctx.sessions.current()
-        const sesionOrigen = idEvento ? ctx.sessions.list().find((s) => s.id === idEvento) : undefined
-        const destinoId = idEvento ?? actual?.id
-        const destinoDir = dirEvento ?? sesionOrigen?.location?.directory ?? actual?.directory
-        const destinoServer = sesionOrigen?.server ?? actual?.server
-        if (!destinoId || !destinoDir || !destinoServer) return
-        if (apagada() && actual?.id === destinoId) return
-        cancelarTimerAutoMic()
-        timerAutoMic = setTimeout(() => {
-          timerAutoMic = undefined
-          if (desmontado || !autoMic() || dialogoAbierto || dictado() !== "libre") return
-          if (usuarioEscribiendo()) return
-          const ahoraActual = ctx.sessions.current()
-          if (apagada() && ahoraActual?.id === destinoId) return
-          if (estado().hablando || estado().silenciado) return
-          abrirDictado(true, { id: destinoId, directory: destinoDir, server: destinoServer })
-        }, AUTO_MIC_RETRASO_MS)
-      })
-    } catch {
-      // si falla la suscripción, el sondeo mantiene el botón al día
+    let bajas: Array<() => void> = []
+    const cerrarBajas = () => {
+      for (const baja of bajas) {
+        try {
+          baja()
+        } catch {
+          // ignora
+        }
+      }
+      bajas = []
     }
+
+    // Se suscribe al servidor de la sesión montada: en remoto, el servidor local de la app
+    // nunca emite los eventos del plugin y el Auto-mic no se enteraría de los turnos.
+    createEffect(() => {
+      const server = ctx.sessions.current()?.server
+      const cliente = (server?.client ?? ctx.client).rpc(Voz)
+      cerrarBajas()
+      try {
+        if (!server?.builtin) {
+          bajas.push(
+            cliente.events.on("textoParaLeer", (evento) => {
+              if (desmontado || dictado() !== "libre") return
+              const dir = carpetaActual()
+              if (dir && evento.location?.directory && evento.location.directory !== dir) return
+              const data = (evento.data ?? {}) as { texto?: string; sessionID?: string }
+              if (!data.texto?.trim()) return
+              void ctx.client
+                .rpc(Voz)
+                .leerTexto(data.sessionID ? { texto: data.texto, sessionID: data.sessionID } : { texto: data.texto })
+                .catch(() => {})
+            }),
+          )
+        }
+        bajas.push(
+          cliente.events.on("estado", (evento) => {
+            const dir = carpetaActual()
+            if (dir && evento.location?.directory && evento.location.directory !== dir) return
+            setEstado(evento.data as Estado)
+          }),
+        )
+        bajas.push(
+          cliente.events.on("turnoTerminado", (evento) => {
+            if (desmontado || !autoMic() || dialogoAbierto || dictado() !== "libre") return
+            if (usuarioEscribiendo()) return
+            const data = (evento.data ?? {}) as { sessionID?: string }
+            const idEvento = data.sessionID
+            const dirEvento = evento.location?.directory
+            const actual = ctx.sessions.current()
+            const sesionOrigen = idEvento ? ctx.sessions.list().find((s) => s.id === idEvento) : undefined
+            const destinoId = idEvento ?? actual?.id
+            const destinoDir = dirEvento ?? sesionOrigen?.location?.directory ?? actual?.directory
+            const destinoServer = sesionOrigen?.server ?? actual?.server
+            if (!destinoId || !destinoDir || !destinoServer) return
+            if (apagada() && actual?.id === destinoId) return
+            cancelarTimerAutoMic()
+            timerAutoMic = setTimeout(() => {
+              timerAutoMic = undefined
+              if (desmontado || !autoMic() || dialogoAbierto || dictado() !== "libre") return
+              if (usuarioEscribiendo()) return
+              const ahoraActual = ctx.sessions.current()
+              if (apagada() && ahoraActual?.id === destinoId) return
+              if (estado().hablando || estado().silenciado) return
+              abrirDictado(true, { id: destinoId, directory: destinoDir, server: destinoServer })
+            }, AUTO_MIC_RETRASO_MS)
+          }),
+        )
+      } catch {
+        // si falla la suscripción, el sondeo mantiene el botón al día
+      }
+    })
+    onCleanup(cerrarBajas)
 
     createEffect(() => {
       const dir = carpetaActual()
@@ -1856,10 +2005,12 @@ export default Plugin.define({
     return () => {
       desmontado = true
       window.removeEventListener("keydown", onTeclaUsuario, true)
+      window.removeEventListener("pointerdown", cancelarCuentaEnCompositor, true)
+      window.removeEventListener("keydown", cancelarCuentaEnCompositor, true)
+      pararCuenta()
       cancelarTimerAutoMic()
       liberarMic()
-      baja?.()
-      bajaTurno?.()
+      cerrarBajas()
       clearInterval(sondeo)
     }
   },
