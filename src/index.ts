@@ -2469,7 +2469,15 @@ export default Plugin.define({
           const { texto, sessionID } = (input ?? {}) as { texto?: string; sessionID?: string }
           const limpio = texto?.trim() ?? ""
           if (limpio && !muted && !sesionActualApagada() && !dictandoEnCurso()) {
-            if (concurrenciaActual() === "cortar" && sesionHablando && sesionHablando !== sessionID) {
+            const info = leerEstadoHablandoInfo()
+            const cortar =
+              concurrenciaActual() === "cortar" &&
+              info.activo &&
+              (!info.sessionID || info.sessionID !== sessionID)
+            registrarLogRemoto(
+              `leerTexto sesion=${sessionID ?? "-"} global=${info.activo} globalSesion=${info.sessionID ?? "-"} local=${sesionHablando ?? "-"} cortar=${cortar}`,
+            )
+            if (cortar) {
               cortarAudioGlobal()
               stopSpeaking(false)
             }
