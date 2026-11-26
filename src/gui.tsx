@@ -405,6 +405,35 @@ export default Plugin.define({
 
     const repetir = async (directory?: string, sessionID?: string) => {
       const id = sessionID ?? sesionActual()?.id
+      const servidor = sesionActual()?.server
+      if (servidor && !servidor.builtin && id) {
+        let texto = ultimoTextoPorSesion.get(id)
+        if (!texto) {
+          try {
+            const mensajes = await servidor.client.session.context({ sessionID: id })
+            for (let i = mensajes.length - 1; i >= 0; i--) {
+              const m = mensajes[i] as {
+                type?: string
+                content?: Array<{ type?: string; text?: string }>
+              }
+              if (m?.type !== "assistant") continue
+              const partes = (m.content ?? [])
+                .filter((p) => p?.type === "text" && p.text?.trim())
+                .map((p) => p.text as string)
+              if (partes.length) {
+                texto = partes.join("\n")
+                break
+              }
+            }
+          } catch {
+            // sin contexto remoto: no hay nada para repetir
+          }
+        }
+        if (texto?.trim()) {
+          await ctx.client.rpc(Voz).leerTexto({ texto, sessionID: id }).catch(() => {})
+          return
+        }
+      }
       try {
         setEstado((await voz().repetir(id ? { sessionID: id } : {}, opciones(directory))) as Estado)
       } catch {
@@ -1916,6 +1945,7 @@ export default Plugin.define({
 
     let bajas: Array<() => void> = []
     let controlEventosRemotos: AbortController | undefined
+    const ultimoTextoPorSesion = new Map<string, string>()
     const cerrarBajas = () => {
       for (const baja of bajas) {
         try {
@@ -1954,6 +1984,7 @@ export default Plugin.define({
                 `evento ${ev.type} sesion=${d?.sessionID ?? "?"} montada=${idMontado ?? "?"} chars=${d?.text?.length ?? 0}`,
               )
               if (!d?.sessionID || !d.text?.trim()) continue
+              ultimoTextoPorSesion.set(d.sessionID, d.text)
               if (idMontado && d.sessionID !== idMontado) continue
               if (dictado() !== "libre" || apagada()) {
                 diag("omitido: dictando o apagada")
