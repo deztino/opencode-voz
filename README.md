@@ -8,6 +8,27 @@ chat desde la app de escritorio.
 
 Podés ver el detalle completo de todas las funcionalidades en [`FEATURES.md`](./FEATURES.md).
 
+## Novedades (dictado, barra de controles y servidores remotos)
+
+- **Sin popup de grabación:** mientras dictás, la barra arriba del cuadro de
+  escritura muestra una barra horizontal de nivel con los segundos, **Pausar /
+  Reanudar**, **Cancelar** y **Enviar voz**. Se ocultan las pills normales
+  (motor, eco, género, Auto-mic) y vuelven al terminar.
+- **El texto va al compositor:** al transcribir, se pega en el cuadro de
+  escritura y aparece **"Enviar en Ns"**; si lo tocás, o editás/hacés clic en el
+  cuadro, se cancela la cuenta y mandás con Enter cuando quieras. Si había
+  texto escrito antes, se preserva.
+- **Servidores remotos:** el dictado se transcribe en la Mac con las claves
+  locales, así que no hace falta instalar el plugin ni las claves en el
+  servidor. Las respuestas del servidor se leen también en la Mac, con el mismo
+  motor de voz; **Voz / Pausar voz / Detener / Silenciar** funcionan igual que
+  en una sesión local, y **Voz** repite el último mensaje remoto.
+- **Sin solapes:** si se está leyendo otra sesión, el texto remoto corta esa
+  lectura antes de empezar; los bloques de una misma sesión se encolan.
+- **Logs:** `~/.local/share/opencode/log/voz-dictado.log` para transcripciones y
+  `~/.local/share/opencode/log/voz-remoto.log` para el diagnóstico de lectura
+  remota.
+
 ### Lectura en voz alta (TTS)
 - **Streaming oración por oración:** empieza a generar el audio mientras el
   asistente todavía está escribiendo (salteando bloques de código) y pre-genera
@@ -46,15 +67,15 @@ Podés ver el detalle completo de todas las funcionalidades en [`FEATURES.md`](.
 ### Dictado por voz (STT), VAD y Auto-mic
 - **Botón "Dictar"** con borde rojo bien visible (relleno rojo al presionarlo o
   mientras graba) al lado de "Voz" arriba del cuadro de escritura:
-  - Corta y bloquea la voz del asistente mientras dictás, reproduce y espera el
-    beep y abre el micrófono antes de mostrar el popup (con fondo translúcido
-    suave y letras nítidas) para empezar grabando al instante.
-  - Incluye **semáforo de audio utilizable** (rojo → verde al juntar 400 ms de
-    voz sobre el umbral) y un **selector numérico ▲▼** (1 a 20 s, por defecto
-    5 s) que regula a la vez el silencio del VAD (con paciencia proporcional
-    +1 s / +2 s en dictados largos) y la cuenta regresiva de confirmación.
-    `Enter` corta al instante, incluye botón **Pausar / Reanudar** y edición
-    previa al envío.
+  - Corta y bloquea la voz del asistente, pide el micrófono en silencio y suena
+    el beep antes de empezar a grabar. No se abre ningún modal: la charla de
+    atrás queda totalmente visible y se puede scrollear mientras dictás.
+  - Mientras grabás, la barra muestra **nivel de micrófono en 8 segmentos**
+    (`████░░░░`) junto a los segundos, más **Pausar / Reanudar**, **Cancelar** y
+    **Enviar voz**. `Enter` corta y transcribe al instante.
+  - Al transcribir, el texto se pega en el compositor con una cuenta regresiva
+    cancelable: tocá el pill **"Enviar en Ns"** para editar tranquilo y mandá
+    con Enter, o esperá a que se envíe solo.
   - Transcribe con **ElevenLabs Scribe v3** o **Groq Whisper**, elegible con la
     pill **"Auto / Eleven / Groq"** (automático con respaldo, o uno solo),
     usando vocabulario personalizado desde `~/.config/opencode/voz-vocabulario.md`,
@@ -88,7 +109,7 @@ Podés ver el detalle completo de todas las funcionalidades en [`FEATURES.md`](.
 ```text
 src/index.ts   motor de voz, trabajadores persistentes, eventos, avisos y transcripción (servidor)
 src/rpc.ts     contrato RPC entre la parte gráfica y el servidor
-src/gui.tsx    pills ("Voz", "Dictar", "Auto-mic on/off", "Fem/Masc"), popups, VAD y comandos (app de escritorio)
+src/gui.tsx    pills ("Voz", "Dictar", "Auto-mic on/off", "Fem/Masc"), VAD, compositor y comandos (app de escritorio)
 assets/        efectos de sonido (beep.wav, staplebops-01.aac, staplebops-02.aac)
 FEATURES.md    descripción completa de todas las funcionalidades del sistema
 ```

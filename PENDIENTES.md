@@ -3,6 +3,8 @@
 ## Lo que ya está hecho y andando
 
 - Lectura en voz alta con `edge-tts` (respaldo `say` en macOS).
+- **Sesiones remotas:** dictado transcrito en la Mac con claves locales; respuestas del servidor leídas en la Mac vía `session.text.ended` + `leerTexto`; pills **Voz / Pausar voz / Detener / Silenciar** y repetición apuntando al plugin local; sin solape de audios entre sesiones. No hace falta instalar el plugin en el servidor remoto.
+- **Dictado sin modal:** controles en la barra (nivel horizontal de 8 segmentos, segundos, Pausar/Reanudar, Cancelar, Enviar voz), ocultando las pills normales mientras se dicta; el texto va al compositor con cuenta regresiva cancelable y se preserva el borrador previo.
 - Lectura en streaming oración por oración + pre-generación en paralelo.
 - Trabajadores persistentes (Python `edge_tts` + JXA `AVAudioPlayer`) con precalentamiento al enviar mensaje.
 - Pausa y reanudación en el milisegundo exacto con `AVAudioPlayer`.
@@ -31,7 +33,7 @@
   - Cada intento de dictado se anota en `~/.local/share/opencode/log/voz-dictado.log` con hora, motor, proveedor, si se envió vocabulario (términos y caracteres/keyterms), duración, caracteres y el error recortado (se recorta solo a las últimas 200 líneas).
   - Vocabulario personalizado en `~/.config/opencode/voz-vocabulario.md` (envía hasta 100 `keyterms` a ElevenLabs y `prompt` de hasta 600 caracteres a Groq; se recarga solo) con comando `/corregir palabra` para agregar al instante y `/corregir` o `/corregir lista` para ver todas las palabras guardadas y sumar nuevas.
   - Lee la clave desde variables de entorno o `~/.config/opencode/.env`.
-  - Confirmación antes de enviar con cuenta regresiva de 5 segundos: Enter envía ya, Escape o Cancelar descarta, y tocar teclas de cursor, escribir o hacer clic frena la cuenta para editar tranquilo.
+  - Confirmación en el propio compositor: el texto se pega abajo con pill "Enviar en Ns" (mínimo 2 segundos); tocarlo, escribir o hacer clic cancela el envío automático y se manda con Enter. El borrador anterior se restaura al enviar.
 
 ## Próximos pasos e ideas
 

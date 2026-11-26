@@ -39,11 +39,10 @@ Plugin de OpenCode para macOS que brinda una conversación completa ida y vuelta
 ## 3. Dictado por voz (STT) y detección automática (VAD)
 
 - **Acceso rápido:** pill **"Dictar"** con borde rojo bien visible (fondo transparente en reposo, relleno rojo al presionarlo o mientras graba) al lado de "Voz".
-- **Popup unificado instantáneo y translúcido:** corta y bloquea la voz del asistente, solicita el micrófono en silencio y apenas está listo abre el popup junto con el beep para empezar a grabar sin demora. Su fondo queda suavemente translúcido (72 por ciento) sin oscurecer el chat de atrás, manteniendo letras y botones al 100 por ciento de nitidez:
-  - **Grabando**: punto rojo pulsante, contador (`MM:SSs`), **semáforo de audio utilizable** (rojo al arrancar, verde con brillo al juntar 400 ms reales de voz por encima del umbral), **selector numérico ▲▼** (de 1 a 20 segundos, guardado en `localStorage`, por defecto 5) que regula a la vez la espera de silencio del VAD y la cuenta regresiva de envío, medidor visual del nivel de micrófono y botón **Pausar / Reanudar**.
-  - **Transcribiendo**: indicador de carga mientras procesa el audio.
-  - **Confirmar dictado**: cuadro editable con cuenta regresiva automática (usa los mismos segundos elegidos en el selector) antes del envío. `Enter` envía ya, `Shift+Enter` agrega salto de línea, `Escape` cancela, y escribir, mover el cursor o hacer clic pausa la cuenta regresiva.
-  - **Error**: muestra el detalle completo con botón **Copiar error**.
+- **Control desde la barra, sin modal:** al dictar se ocultan las pills habituales y aparecen **nivel de micrófono horizontal de 8 segmentos** (`████░░░░`) con el contador (`MM:SSs`), **Pausar / Reanudar**, **Cancelar** y **Enviar voz**. La conversación de atrás sigue visible y se puede scrollear; el velo y la capa del diálogo no interceptan la rueda del mouse, y la rueda y las flechas se reenvían al scroll de la charla.
+- **Transcribiendo:** pill **"Transcribiendo…"** mientras procesa el audio.
+- **Texto en el compositor:** la transcripción se pega en el cuadro de escritura y aparece **"Enviar en Ns"** (mínimo 2 segundos). Tocar ese pill cancela el envío automático; escribir, hacer clic o mover el cursor en el compositor también lo cancela. Entonces se edita y se envía con Enter. Si había un borrador previo, se restaura al enviar. **"Enviar ahora"** permite mandar el texto editado.
+- **Errores:** se muestran como aviso (toast), con el detalle copiable desde el propio aviso.
 - **Detección de actividad de voz (VAD):**
   - Captura audio con cancelación de eco y supresión de ruido (`echoCancellation`, `noiseSuppression`).
   - Espera a que termine el beep antes de arrancar la grabación y el VAD, salta 250 milisegundos iniciales antes de detectar voz y espera 600 milisegundos (con tope en `0.008`) antes de calibrar el piso de ruido para que el eco del beep no suba la vara.
@@ -101,10 +100,19 @@ Reproducidos de forma nativa en macOS mediante `afplay`:
 ```text
 src/index.ts               Motor TTS/STT, trabajadores persistentes, eventos, avisos y sonidos (servidor)
 src/rpc.ts                 Contrato RPC de métodos y eventos entre la interfaz y el servidor
-src/gui.tsx                Pills ("Voz", "Dictar", "Auto-mic on/off", "Fem/Masc"), popups, VAD y comandos (GUI)
+src/gui.tsx                Pills ("Voz", "Dictar", "Auto-mic on/off", "Fem/Masc"), VAD, compositor y comandos (GUI)
 assets/                    Efectos de sonido (beep.wav, staplebops-01.aac, staplebops-02.aac)
 dist/gui-experimental.cjs  Paquete compilado de la interfaz gráfica (generado con npm run build)
 ```
+
+## 7-bis. Servidores remotos
+
+- **Dictado remoto con claves locales:** el micrófono y la grabación pasan en la app de escritorio; el audio se transcribe con el plugin local usando `ELEVENLABS_API_KEY` / `GROQ_API_KEY` de la Mac. No hace falta instalar el plugin ni cargar claves en el servidor remoto. Si el plugin local no responde, se intenta con el servidor de la sesión.
+- **Lectura de respuestas remotas en la Mac:** la GUI se suscribe a `session.text.ended` del servidor remoto, junta el texto y lo manda al plugin local con `leerTexto`, que lo reproduce con `edge`/`say`. Se usó `session.text.ended` porque trae el texto completo; antes se intentaba con `session.idle` y no llegaba.
+- **Estado y controles remotos:** en sesiones remotas, el pill **Voz / Pausar voz / Seguir voz**, **Detener** y **Silenciar** consultan y comandan al plugin local, que es el que reproduce el audio (el servidor remoto no tiene plugin).
+- **Repetir en remoto:** el pill **Voz** usa el último texto recibido del servidor; si no está en memoria lo busca en el contexto de la sesión remota y lo lee localmente.
+- **Sin solapes:** al llegar texto remoto se corta la lectura en curso de otra sesión (según el modo `cortar`/`esperar`) antes de encolar la nueva; los bloques de la misma sesión se encolan sin cortarse.
+- **Diagnóstico:** cada paso de la lectura remota queda en `~/.local/share/opencode/log/voz-remoto.log`, con el método RPC `logDiagnostico`.
 
 ## 8. Variables de entorno
 
