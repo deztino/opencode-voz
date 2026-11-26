@@ -293,6 +293,10 @@ export default Plugin.define({
      * en remoto no conoce las carpetas del servidor y responde "Location not found".
      */
     const voz = (server?: Servidor) => ((server ?? ctx.sessions.current()?.server)?.client ?? ctx.client).rpc(Voz)
+    const sesionRemota = () => {
+      const server = ctx.sessions.current()?.server
+      return Boolean(server && !server.builtin)
+    }
     const carpetaActual = () => ctx.sessions.current()?.directory
     const opciones = (directory?: string) => {
       const dir = directory ?? carpetaActual()
@@ -387,9 +391,14 @@ export default Plugin.define({
 
     const refrescar = async (directory?: string) => {
       const opts = opciones(directory)
-      if (!opts) return
+      const remoto = sesionRemota()
+      if (!opts && !remoto) return
       try {
-        setEstado((await voz().estado({}, opts)) as Estado)
+        setEstado(
+          remoto
+            ? ((await ctx.client.rpc(Voz).estado({})) as Estado)
+            : ((await voz().estado({}, opts)) as Estado),
+        )
       } catch {
         // el servidor todavía no está listo; el próximo sondeo lo resuelve
       }
@@ -397,7 +406,11 @@ export default Plugin.define({
 
     const pausar = async (directory?: string) => {
       try {
-        setEstado((await voz().pausar({}, opciones(directory))) as Estado)
+        setEstado(
+          sesionRemota()
+            ? ((await ctx.client.rpc(Voz).pausar({})) as Estado)
+            : ((await voz().pausar({}, opciones(directory))) as Estado),
+        )
       } catch {
         // si el servidor no contesta, no hay audio que pausar
       }
@@ -443,7 +456,11 @@ export default Plugin.define({
 
     const parar = async (directory?: string) => {
       try {
-        setEstado((await voz().parar({}, opciones(directory))) as Estado)
+        setEstado(
+          sesionRemota()
+            ? ((await ctx.client.rpc(Voz).parar({})) as Estado)
+            : ((await voz().parar({}, opciones(directory))) as Estado),
+        )
       } catch {
         // si el servidor no contesta, no hay audio que cortar
       }
@@ -451,7 +468,11 @@ export default Plugin.define({
 
     const alternar = async (directory?: string) => {
       try {
-        setEstado((await voz().alternar({}, opciones(directory))) as Estado)
+        setEstado(
+          sesionRemota()
+            ? ((await ctx.client.rpc(Voz).alternar({})) as Estado)
+            : ((await voz().alternar({}, opciones(directory))) as Estado),
+        )
       } catch {
         // ídem
       }
@@ -2002,6 +2023,11 @@ export default Plugin.define({
             diag(`stream cortado: ${error instanceof Error ? error.message : String(error)}`)
           }
         })()
+      }
+      if (server && !server.builtin) {
+        bajas.push(
+          ctx.client.rpc(Voz).events.on("estado", (evento) => setEstado(evento.data as Estado)),
+        )
       }
       try {
         if (!server?.builtin) {
