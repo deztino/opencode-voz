@@ -1915,6 +1915,7 @@ export default Plugin.define({
     }))
 
     let bajas: Array<() => void> = []
+    let controlEventosRemotos: AbortController | undefined
     const cerrarBajas = () => {
       for (const baja of bajas) {
         try {
@@ -1932,6 +1933,40 @@ export default Plugin.define({
       const server = ctx.sessions.current()?.server
       const cliente = (server?.client ?? ctx.client).rpc(Voz)
       cerrarBajas()
+      controlEventosRemotos?.abort()
+      controlEventosRemotos = undefined
+      if (server && !server.builtin) {
+        const ctrl = new AbortController()
+        controlEventosRemotos = ctrl
+        void (async () => {
+          const textoPorSesion = new Map<string, string>()
+          try {
+            for await (const ev of server.client.event.subscribe({
+              types: ["session.text.delta", "session.idle"],
+              signal: ctrl.signal,
+            })) {
+              if (ctrl.signal.aborted || desmontado) break
+              if (ev.type === "session.text.delta") {
+                const d = ev.data as { sessionID?: string; delta?: string }
+                if (!d?.sessionID || !d.delta) continue
+                const idMontado = ctx.sessions.current()?.id
+                if (idMontado && d.sessionID !== idMontado) continue
+                textoPorSesion.set(d.sessionID, (textoPorSesion.get(d.sessionID) ?? "") + d.delta)
+              } else if (ev.type === "session.idle") {
+                const d = ev.data as { sessionID?: string }
+                const id = d?.sessionID
+                if (!id) continue
+                const texto = (textoPorSesion.get(id) ?? "").trim()
+                textoPorSesion.delete(id)
+                if (!texto || desmontado || dictado() !== "libre" || apagada()) continue
+                void ctx.client.rpc(Voz).leerTexto({ texto, sessionID: id }).catch(() => {})
+              }
+            }
+          } catch {
+            // el servidor remoto se desconectó; se reintentará al cambiar de sesión
+          }
+        })()
+      }
       try {
         if (!server?.builtin) {
           bajas.push(
@@ -2011,6 +2046,7 @@ export default Plugin.define({
       cancelarTimerAutoMic()
       liberarMic()
       cerrarBajas()
+      controlEventosRemotos?.abort()
       clearInterval(sondeo)
     }
   },
