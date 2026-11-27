@@ -5,6 +5,8 @@ import { Voz } from "./rpc.js"
 type Estado = {
   hablando: boolean
   enCola?: boolean
+  sintetizando?: boolean
+  reproduciendo?: boolean
   pausado: boolean
   silenciado: boolean
   genero?: "fem" | "masc"
@@ -31,6 +33,17 @@ const AUTO_MIC_ESTABILIZACION_MS = 500
 const AUTO_MIC_UMBRAL_MIN = 0.009
 const AUTO_MIC_MULTIPLICADOR_RUIDO = 2.1
 const AUTO_MIC_MIN_VOZ_MS = 200
+/** Paciencia del VAD: mínimo 5 s, tope 8 s aunque el ajuste de espera sea mayor. */
+const PACIENCIA_MIN_MS = 5000
+const PACIENCIA_MAX_MS = 8000
+/** Base de la paciencia, con piso de 5 s aunque "Espera para enviar" esté en 3 s. */
+const pacienciaBase = () => Math.max(PACIENCIA_MIN_MS, (leerEsperaSeg() || 3) * 1000)
+/** El recorder entrega un trozo cada 2 s; así siempre hay audio suficiente para transcribir. */
+const STT_TROZO_MS = 2000
+/** Tramos más cortos que esto no se mandan al STT: audio casi vacío y Groq alucina. */
+const TRAMO_MIN_MS = 2000
+/** Groq factura cualquier audio de menos de 10 s como 10 s: no gastes en trozos casi vacíos. */
+const STT_MIN_SEGUNDOS = 2
 const ESPERA_STORAGE_KEY = "opencode-voz.esperaDictado"
 const ESPERA_DEFECTO_SEG = 5
 const ESPERA_MIN_SEG = 1
@@ -70,15 +83,36 @@ function guardarAutoMic(valor: boolean) {
   }
 }
 
-function esComandoDejarDeEscuchar(texto: string): boolean {
-  const normalizado = texto
+function normalizarParaComando(texto: string): string {
+  return texto
     .toLowerCase()
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
     .replace(/[¡!¿?.,;:()[\]"'«»…-]+/g, " ")
     .replace(/\s+/g, " ")
     .trim()
+}
+
+function esComandoDejarDeEscuchar(texto: string): boolean {
+  const normalizado = normalizarParaComando(texto)
   return normalizado === "dejar de escuchar" || normalizado === "deja de escuchar"
+}
+
+/**
+ * Para la revisión del texto acumulado: la frase cuenta como comando solo si
+ * cierra lo que dijiste. Si la nombrás en medio ("no dije la palabra dejar de
+ * escuchar...") no debe disparar: eso fue un falso positivo el 27/11.
+ */
+function terminaConComandoDeEscuchar(texto: string): boolean {
+  return /(?:dejar|deja)\s+de\s+escuchar$/iu.test(normalizarParaComando(texto))
+}
+
+/** Saca solo la frase comando final para que no se envíe como mensaje. */
+function quitarComandoDeEscuchar(texto: string): string {
+  return texto
+    .replace(/\b(?:dejar|dej[áa])\s+de\s+escuchar\b[.!?¡!…]*\s*$/iu, "")
+    .replace(/\s+/g, " ")
+    .trim()
 }
 
 const ESTILOS_DICTADO = `
@@ -188,6 +222,8 @@ button:is(
   [title="Pausar la lectura en voz alta"], [aria-label="Pausar la lectura en voz alta"],
   [title="Seguir la lectura desde donde quedó"], [aria-label="Seguir la lectura desde donde quedó"],
   [title="Audio esperando para sonar: arranca apenas esté libre el turno. Stop lo cancela"],
+  [title="Generando el audio de la respuesta: pasa a Pausar voz apenas empiece a sonar"],
+  [aria-label="Generando el audio de la respuesta: pasa a Pausar voz apenas empiece a sonar"],
   [title^="Plugin de voz apagado"], [aria-label^="Plugin de voz apagado"],
   [title="Enviar el texto que dejaste en el compositor"], [aria-label="Enviar el texto que dejaste en el compositor"],
   [title="Tocá para cancelar el envío automático y editar el texto"],
@@ -200,6 +236,8 @@ button:is(
   [title="Pausar la grabación"], [aria-label="Pausar la grabación"],
   [title="Seguir grabando"], [aria-label="Seguir grabando"],
   [title="Transcribiendo el audio"], [aria-label="Transcribiendo el audio"],
+  [title="Generando el audio de la respuesta: pasa a Pausar voz apenas empiece a sonar"],
+  [aria-label="Generando el audio de la respuesta: pasa a Pausar voz apenas empiece a sonar"],
   [title="Transcribiendo el audio: se habilita para enviar cuando termine"],
   [aria-label="Transcribiendo el audio: se habilita para enviar cuando termine"],
   [title="Ya hay audio utilizable para transcribir"], [aria-label="Ya hay audio utilizable para transcribir"],
@@ -207,7 +245,9 @@ button:is(
   [aria-label="Todavía no hay audio utilizable para transcribir"],
   [title="Nivel del micrófono y cuenta para el envío automático por silencio"],
   [aria-label="Nivel del micrófono y cuenta para el envío automático por silencio"],
-  [title^="Ajustes de voz"], [aria-label^="Ajustes de voz"], [aria-label="Ajustes"]
+  [title^="Ajustes de voz"], [aria-label^="Ajustes de voz"], [aria-label="Ajustes"],
+  [title="Charla contínua prendida: el micrófono se abre solo tras cada respuesta. Clic para apagarla"],
+  [aria-label="Charla contínua prendida: el micrófono se abre solo tras cada respuesta. Clic para apagarla"]
 ) {
   opacity: 0.8 !important;
 }
@@ -223,6 +263,8 @@ button:is(
   [title="Pausar la grabación"], [aria-label="Pausar la grabación"],
   [title="Seguir grabando"], [aria-label="Seguir grabando"],
   [title="Transcribiendo el audio"], [aria-label="Transcribiendo el audio"],
+  [title="Generando el audio de la respuesta: pasa a Pausar voz apenas empiece a sonar"],
+  [aria-label="Generando el audio de la respuesta: pasa a Pausar voz apenas empiece a sonar"],
   [title="Transcribiendo el audio: se habilita para enviar cuando termine"],
   [aria-label="Transcribiendo el audio: se habilita para enviar cuando termine"],
   [title="Ya hay audio utilizable para transcribir"], [aria-label="Ya hay audio utilizable para transcribir"],
@@ -307,6 +349,8 @@ export default Plugin.define({
     const [estado, setEstado] = createSignal<Estado>({
       hablando: false,
       enCola: false,
+      sintetizando: false,
+      reproduciendo: false,
       pausado: false,
       silenciado: false,
       genero: "fem",
@@ -324,6 +368,25 @@ export default Plugin.define({
     let grabadora: MediaRecorder | undefined
     let flujoMic: MediaStream | undefined
     let fragmentos: Blob[] = []
+    let timerTranscripcionParcial: ReturnType<typeof setInterval> | undefined
+    let transcripcionParcialEnVuelo = false
+    let textoParcialAcumulado = ""
+    let textoParcialUltimo = ""
+    // Borrador original del compositor, capturado una sola vez por dictado. La
+    // vista previa se recalcula desde acá para no duplicar el texto al enviar.
+    let textoBaseVista: string | undefined
+    let vistaPreviaTexto = ""
+    let omitirTranscripcionFinal = false
+    // Corte de tramo: al silencio se PARA el recorder, se transcribe ese audio
+    // una sola vez y se arranca otro MediaRecorder distinto sobre el mismo mic.
+    let cortePorSilencio = false
+    let mimeGrabacion = ""
+    // El VAD prende esto en cuanto oye voz dentro del tramo actual. Los tramos
+    // de silencio se descartan: Groq los transcribe como "Gracias." inventado.
+    let vozEnTramo = false
+    // El sonido de cierre se toca recién en onstop, cuando el blob ya se cerró,
+    // para que el clic no se cuele en el audio que va al STT.
+    let sonarFinAlParar = false
     let timerGrabacion: ReturnType<typeof setInterval> | undefined
     let timerAutoMic: ReturnType<typeof setTimeout> | undefined
     let timerPulso: ReturnType<typeof setInterval> | undefined
@@ -577,6 +640,14 @@ export default Plugin.define({
 
     const diagPlugin = (mensaje: string) => {
       void ctx.client.rpc(Voz).logDiagnostico({ mensaje }).catch(() => {})
+    }
+
+    /** Corta el timer de STT parcial; el texto acumulado se conserva para la revisión al silencio. */
+    const detenerTranscripcionParcial = () => {
+      if (timerTranscripcionParcial) {
+        clearInterval(timerTranscripcionParcial)
+        timerTranscripcionParcial = undefined
+      }
     }
 
     const [apagada, setApagada] = createSignal(false)
@@ -875,7 +946,7 @@ export default Plugin.define({
                     ref={campo}
                     type="text"
                     aria-label="Palabra o frase para el vocabulario"
-                    placeholder="Por ejemplo: Auto-mic"
+                    placeholder="Por ejemplo: Charla contínua"
                     value={termino()}
                     onInput={(e) => setTermino(e.currentTarget.value)}
                     onKeyDown={(e) => {
@@ -961,8 +1032,7 @@ export default Plugin.define({
       pausada: () => boolean
       restante: () => number | null
     }
-    let controlDictado: ControlDictado | undefined
-    let textoPrevio = ""
+    const [controlDictado, setControlDictado] = createSignal<ControlDictado | undefined>()
     let textoPegado = ""
     let textoVisto = false
     let textoDestinoId = ""
@@ -998,22 +1068,44 @@ export default Plugin.define({
         if (actual <= 1) {
           diagPlugin("cuenta: enviando")
           pararCuenta("envío")
-          controlDictado?.enviarAhora()
+          controlDictado()?.enviarAhora()
           return
         }
         setCuentaRestante(actual - 1)
       }, 1000)
     }
 
+    /** Arma el texto final a partir del borrador guardado, no de lo que hay en el cuadro. */
+    const unirConBorrador = (texto: string) => {
+      const base = textoBaseVista ?? ""
+      const separador = base && !/\s$/.test(base) ? " " : ""
+      return `${base}${separador}${texto}`
+    }
+
     const ponerTextoEnCompositor = (texto: string, destino: DestinoDictado) => {
       const composer =
         ctx.sessions.current()?.id === destino.id ? ctx.screen.current()?.composer : undefined
       cancelarTimerTextoVacio()
-      textoPrevio = composer?.text() ?? ""
-      textoPegado = texto
+      // Si ya veníamos previsualizando, el borrador original es el guardado, no
+      // lo que el usuario vio en el cuadro (que incluía lo reconocido).
+      if (textoBaseVista === undefined) textoBaseVista = composer?.text() ?? ""
+      textoPegado = unirConBorrador(texto)
       textoVisto = false
       textoDestinoId = destino.id
-      composer?.setText(texto)
+      // El seguimiento debe ver el texto completo, no solo lo que dictamos, para
+      // que no cancele el envío automático apenas aplica el setText.
+      composer?.setText(textoPegado)
+    }
+
+    /** Fase 3: muestra lo reconocido hasta ahora sin gastar llamadas al STT. */
+    const actualizarVistaPrevia = (texto: string, destino: DestinoDictado) => {
+      const composer =
+        ctx.sessions.current()?.id === destino.id ? ctx.screen.current()?.composer : undefined
+      if (!composer || !texto) return
+      if (textoBaseVista === undefined) textoBaseVista = composer.text() ?? ""
+      const completo = unirConBorrador(texto)
+      if (composer.text() !== completo) composer.setText(completo)
+      diagPlugin(`vista-previa chars=${texto.length}`)
     }
 
     createEffect(() => {
@@ -1042,16 +1134,22 @@ export default Plugin.define({
           // El texto se fue (lo envió con el botón de OpenCode): cerramos las pills
           // en vez de dejar "Enviar ahora / Cancelar" prendidos para siempre.
           diagPlugin("cuenta: compositor vacío confirmado, cerrando dictado")
-          controlDictado?.cerrar()
+          controlDictado()?.cerrar()
         }, 250)
         return
       }
       cancelarTimerTextoVacio()
       diagPlugin(`cuenta: compositor cambió (${limpio.length} chars)`)
-      controlDictado?.cancelarEnvio()
+      controlDictado()?.cancelarEnvio()
     })
 
     const abrirDictado = (modoAuto = false, destino?: DestinoDictado) => {
+      // El acumulado es por dictado: nunca puede arrastrar texto del anterior.
+      textoParcialAcumulado = ""
+      textoParcialUltimo = ""
+      textoBaseVista = undefined
+      vistaPreviaTexto = ""
+      vozEnTramo = false
       const actual = ctx.sessions.current()
       if (apagada() && (!destino || actual?.id === destino.id)) {
         if (!modoAuto) ctx.toast.show({ title: "El plugin de voz está apagado en esta sesión", variant: "default" })
@@ -1081,6 +1179,10 @@ export default Plugin.define({
       }
       const corteVoz = avisarDictado(true)
       dialogoAbierto = true
+      setControlDictado(undefined)
+      // Pasamos la barra a modo dictado YA, antes de pedir el micrófono: así no
+      // se ve un instante la botonera de reproducción cuando abre Charla contínua.
+      setDictado("grabando")
 
       void (async () => {
         let stream: MediaStream | undefined
@@ -1093,6 +1195,7 @@ export default Plugin.define({
           if (desmontado) {
             for (const pista of stream.getTracks()) pista.stop()
             dialogoAbierto = false
+            setDictado("libre")
             void avisarDictado(false)
             return
           }
@@ -1123,7 +1226,7 @@ export default Plugin.define({
         const [estadoVoz, setEstadoVoz] = createSignal<EstadoVoz>("esperando")
         const [nivelMic, setNivelMic] = createSignal(0)
         const [silencioMs, setSilencioMs] = createSignal(0)
-        const [pacienciaMs, setPacienciaMs] = createSignal(esperaSeg() * 1000)
+        const [pacienciaMs, setPacienciaMs] = createSignal(pacienciaBase())
         const [esperaSinVozMs, setEsperaSinVozMs] = createSignal(0)
         const [grabacionPausada, setGrabacionPausada] = createSignal(false)
         const [audioUtil, setAudioUtil] = createSignal(false)
@@ -1383,8 +1486,121 @@ export default Plugin.define({
           setNivelMic(0)
           setSilencioMs(0)
           setEsperaSinVozMs(0)
-          setPacienciaMs(esperaSeg() * 1000)
+          setPacienciaMs(pacienciaBase())
           setEstadoVoz("esperando")
+        }
+
+        /**
+         * Transcribe UN tramo (el audio que ya terminó de grabarse) una sola vez
+         * y suma su texto al acumulado del mensaje. Nunca reenvía audio anterior.
+         */
+        const transcribirTramo = async (blob: Blob, mimeType: string) => {
+          if (cancelado || cerrado || blob.size < 200) return
+          if (transcripcionParcialEnVuelo) return
+          transcripcionParcialEnVuelo = true
+          try {
+            const audioBase64 = await blobABase64(blob)
+            if (cancelado || cerrado) return
+            const res = await transcribirDictado(session.server, session.directory, audioBase64, mimeType)
+            if (cancelado || cerrado) return
+            if (res.error) {
+              diagPlugin(`tramo error=${res.error.slice(0, 120)}`)
+              return
+            }
+            // Groq le agrega a veces un "Gracias." fantasma DESPUÉS de la frase
+            // comando. Eso hace que no se detecte "dejar de escuchar" al final y
+            // que el texto quede abajo sin enviarse (reportado por el usuario).
+            const crudo = res.text.trim()
+            const texto = crudo.replace(/((?:dejar|deja)\s+de\s+escuchar)[.!?…]*\s+gracias[.!?…]*\s*$/iu, "$1").trim()
+            if (texto !== crudo) diagPlugin('tramo: "Gracias." fantasma después de la frase, descartado')
+            if (!texto) return
+            textoParcialAcumulado = textoParcialAcumulado ? `${textoParcialAcumulado} ${texto}` : texto
+            textoParcialUltimo = texto
+            diagPlugin(`tramo chars=${texto.length} acumulado=${textoParcialAcumulado.length} texto="${texto.slice(0, 80)}"`)
+            if (textoParcialAcumulado !== vistaPreviaTexto) {
+              vistaPreviaTexto = textoParcialAcumulado
+              actualizarVistaPrevia(textoParcialAcumulado, session)
+            }
+          } catch (error) {
+            diagPlugin(`tramo fallo: ${error instanceof Error ? error.message : String(error)}`)
+          } finally {
+            transcripcionParcialEnVuelo = false
+          }
+        }
+
+        /** Apaga Charla contínua y cierra el mic cuando la frase no manda texto. */
+        const apagarEscucha = (motivo: string) => {
+          diagPlugin(`tramo ${motivo}: apagando Charla contínua`)
+          void vozSonido(session.server).sonidoSinVoz({}, opcionesSonido(session.server, session.directory)).catch(() => {})
+          desactivarAutoMic()
+          detenerVad()
+          detenerTranscripcionParcial()
+          try {
+            if (grabadora && grabadora.state !== "inactive") grabadora.stop()
+          } catch {
+            // ignora si ya frenó
+          }
+          liberarMic()
+          setDictado("libre")
+          cerrarDialogo()
+          ctx.toast.show({ title: "Charla contínua desactivada", variant: "default" })
+        }
+
+        /**
+         * Si el acumulado termina con "dejar de escuchar": apaga Charla contínua
+         * o envía el texto sin la frase, según el estado de la pill.
+         */
+        const procesarFrase = () => {
+          if (cancelado || cerrado) return
+          if (!terminaConComandoDeEscuchar(textoParcialAcumulado)) return
+          diagPlugin("tramo frase detectada al silencio")
+          if (!autoMic()) {
+            apagarEscucha("comando con la pill apagada")
+            return
+          }
+          const texto = quitarComandoDeEscuchar(textoParcialAcumulado)
+          textoParcialAcumulado = ""
+          textoParcialUltimo = ""
+          if (!texto) {
+            // "Dejar de escuchar" dicho solo: no hay mensaje que enviar, pero
+            // tiene que dejar de escuchar igual (antes seguía con el mic abierto).
+            apagarEscucha("comando sin texto")
+            return
+          }
+          diagPlugin(`tramo comando enviar chars=${texto.length}`)
+          textoPegado = ""
+          textoVisto = false
+          textoDestinoId = ""
+          cancelarTimerTextoVacio()
+          setTexto(texto)
+          setFase("confirmar")
+          setDictado("confirmar")
+          ponerTextoEnCompositor(texto, session)
+          iniciarCuenta()
+          // El texto ya está listo: no hace falta transcribir el tramo al cerrar.
+          omitirTranscripcionFinal = true
+          detenerVad()
+          detenerTranscripcionParcial()
+          try {
+            if (grabadora && grabadora.state !== "inactive") grabadora.stop()
+          } catch {
+            // ignora si ya frenó
+          }
+        }
+
+        /**
+         * Al silencio del VAD: CORTA el tramo. El onstop se encarga de transcribir
+         * ese audio una sola vez y de arrancar un MediaRecorder nuevo.
+         */
+        const revisarFrasePorSilencio = async () => {
+          if (cancelado || cerrado || fase() !== "grabando") return
+          if (grabadora && grabadora.state === "recording") {
+            cortePorSilencio = true
+            diagPlugin("corte: pidiendo stop del recorder al silencio")
+            grabadora.stop()
+            return
+          }
+          procesarFrase()
         }
 
         const iniciarVad = (stream: MediaStream) => {
@@ -1395,7 +1611,10 @@ export default Plugin.define({
               webkitAudioContext?: typeof AudioContext
             }
             const AudioCtx = w.AudioContext ?? w.webkitAudioContext
-            if (!AudioCtx) return
+            if (!AudioCtx) {
+              diagPlugin("vad: sin AudioContext (Web Audio no disponible)")
+              return
+            }
             const ctxAudio = new AudioCtx()
             audioCtx = ctxAudio
             const fuente = ctxAudio.createMediaStreamSource(stream)
@@ -1411,10 +1630,17 @@ export default Plugin.define({
             let speechMs = 0
             let rafagaMs = 0
             let silenceSince: number | null = null
+            let ticksVad = 0
 
             intervaloVad = setInterval(() => {
               if (cancelado || cerrado || fase() !== "grabando") {
                 detenerVad()
+                return
+              }
+              // Si el AudioContext quedó suspendido (autoplay policy), el analizador
+              // devuelve ceros aunque el MediaRecorder sí esté grabando audio.
+              if (ctxAudio.state !== "running") {
+                void ctxAudio.resume().catch(() => {})
                 return
               }
               if (grabacionPausada()) {
@@ -1429,6 +1655,10 @@ export default Plugin.define({
               for (let i = 0; i < datos.length; i++) suma += datos[i] * datos[i]
               const rms = Math.sqrt(suma / datos.length)
               setNivelMic(Math.min(100, Math.round(rms * 450)))
+              ticksVad += 1
+              if (ticksVad % 10 === 0) {
+                diagPlugin(`vad: rms=${rms.toFixed(4)} floor=${noiseFloor.toFixed(4)} state=${ctxAudio.state}`)
+              }
 
               const ahora = performance.now()
               const transcurrido = ahora - inicioEscucha
@@ -1462,6 +1692,7 @@ export default Plugin.define({
                     spoke = true
                     setAudioUtil(true)
                   }
+                  vozEnTramo = true
                   setEstadoVoz("hablando")
                   silenceSince = null
                   setSilencioMs(0)
@@ -1485,9 +1716,10 @@ export default Plugin.define({
                 return
               }
 
-              // Paciencia adaptativa: en dictados largos las pausas para pensar son más largas
-              const baseEspera = esperaSeg() * 1000
-              const paciencia = speechMs > 20000 ? baseEspera + 2000 : speechMs > 9000 ? baseEspera + 1000 : baseEspera
+              // Paciencia adaptativa con piso de 5 s y tope de 8 s: +1 s a los 9 s
+              // de voz, +2 s a los 20 s y +3 s a los 30 s.
+              const extra = speechMs > 30000 ? 3000 : speechMs > 20000 ? 2000 : speechMs > 9000 ? 1000 : 0
+              const paciencia = Math.min(PACIENCIA_MAX_MS, pacienciaBase() + extra)
               setPacienciaMs(paciencia)
 
               if (silenceSince === null) {
@@ -1497,16 +1729,34 @@ export default Plugin.define({
               setSilencioMs(callado)
               if (callado >= 600) setEstadoVoz("pausa")
               if (callado >= paciencia) {
-                detenerVad()
-                detenerYTranscribir()
+                if (autoMic()) {
+                  // Charla contínua prendida: el silencio no cierra el mic, solo revisa lo
+                  // transcripto por si dijeron "dejar de escuchar". Lo decide la pill,
+                  // aunque el dictado se haya abierto tocando Dictar.
+                  silenceSince = ahora
+                  void revisarFrasePorSilencio()
+                } else {
+                  detenerVad()
+                  detenerYTranscribir()
+                }
               }
             }, VAD_TICK_MS)
 
+            diagPlugin(`vad: iniciado state=${ctxAudio.state}`)
             if (ctxAudio.state === "suspended") {
               void ctxAudio.resume().catch(() => {})
             }
-          } catch {
-            // Si Web Audio no está disponible, el dictado manual con Enter sigue funcionando.
+            // Si el VAD no llega a arrancar, la pill queda clavada en "cierra en 8s"
+            // y la barra de nivel en 0. Cerramos con aviso en vez de dejarlo colgado.
+            setTimeout(() => {
+              if (cancelado || cerrado || fase() !== "grabando" || intervaloVad) return
+              diagPlugin("vad: no arrancó, cerrando dictado")
+              ctx.toast.show({ title: "El micrófono no entregó audio. Intentá de nuevo.", variant: "error" })
+              setDictado("libre")
+              cerrarDialogo()
+            }, 3000)
+          } catch (error) {
+            diagPlugin(`vad: error ${error instanceof Error ? error.message : String(error)}`)
           }
         }
 
@@ -1523,11 +1773,16 @@ export default Plugin.define({
           cerrado = true
           dialogoAbierto = false
           detenerActivo = undefined
+          setControlDictado(undefined)
+          detenerTranscripcionParcial()
+          vistaPreviaTexto = ""
           if (intervaloEnvio) {
             clearInterval(intervaloEnvio)
             intervaloEnvio = undefined
           }
           if (liberarBloqueo) void avisarDictado(false)
+          textoParcialAcumulado = ""
+          textoParcialUltimo = ""
           dialog.close()
           enfocarCuadroTexto()
         }
@@ -1545,7 +1800,11 @@ export default Plugin.define({
           if (!limpio) return
           setDictado("libre")
           cerrarDialogo(false)
-          if (composer) composer.setText(textoPrevio)
+          // El borrador ya viaja dentro de `limpio`. OpenCode no vacía el cuadro
+          // cuando mandamos por RPC, así que lo limpiamos nosotros (antes se
+          // restauraba el borrador y el texto quedaba abajo para siempre).
+          if (composer) composer.setText("")
+          textoBaseVista = undefined
           const marcado = vozEstado(session.server, session.directory)
           void (async () => {
             try {
@@ -1584,19 +1843,23 @@ export default Plugin.define({
 
         const cancelar = () => {
           cancelado = true
+          cortePorSilencio = false
           setGrabacionPausada(false)
           pausarAutoEnvio()
-          if (dictado() === "confirmar") {
-            const composer =
-              ctx.sessions.current()?.id === session.id ? ctx.screen.current()?.composer : undefined
-            if (composer && composer.text() === textoPegado) composer.setText(textoPrevio)
-          }
+          // Cancelar frena el dictado pero NO toca el compositor: lo que haya
+          // abajo (incluida la vista previa) se conserva para editar y mandar.
+          const composerCancelado =
+            ctx.sessions.current()?.id === session.id ? ctx.screen.current()?.composer : undefined
+          diagPlugin(`cancelar: texto conservado chars=${composerCancelado?.text().length ?? -1}`)
+          textoBaseVista = undefined
+          vistaPreviaTexto = ""
           detenerVad()
           try {
             if (grabadora && grabadora.state !== "inactive") grabadora.stop()
           } catch {
             // ignora si ya frenó
           }
+          detenerTranscripcionParcial()
           fragmentos = []
           liberarMic()
           setDictado("libre")
@@ -1627,12 +1890,13 @@ export default Plugin.define({
 
         const detenerYTranscribir = () => {
           if (fase() !== "grabando") return
+          cortePorSilencio = false
           setGrabacionPausada(false)
           detenerVad()
           try {
             if (grabadora && grabadora.state !== "inactive") {
+              sonarFinAlParar = true
               grabadora.stop()
-              void vozSonido(session.server).sonidoFinGrabacion({}, opcionesSonido(session.server, session.directory)).catch(() => {})
             } else {
               cancelar()
             }
@@ -1647,7 +1911,7 @@ export default Plugin.define({
           if (dictado() !== "confirmar") return
           if (e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLInputElement) {
             // Poner el cursor para editar también cancela el envío automático.
-            controlDictado?.cancelarEnvio()
+            controlDictado()?.cancelarEnvio()
           }
         }
         window.addEventListener("focusin", alEnfocarComposer, true)
@@ -1661,7 +1925,7 @@ export default Plugin.define({
               e.key === "ArrowDown" ||
               e.key === "Home" ||
               e.key === "End"
-            if (mover && !e.metaKey && !e.ctrlKey) controlDictado?.cancelarEnvio()
+            if (mover && !e.metaKey && !e.ctrlKey) controlDictado()?.cancelarEnvio()
             return
           }
           if (fase() !== "grabando") return
@@ -1682,64 +1946,124 @@ export default Plugin.define({
         }
         window.addEventListener("keydown", onWindowKeyDown, true)
 
-        const transcribirBlob = async (blob: Blob, mimeType: string) => {
-          if (cancelado) return
-          if (blob.size < 200) {
+        /**
+         * El último tramo ya fue transcripto por transcribirTramo: acá solo
+         * mandamos el acumulado, sin volver a pedirle audio al proveedor.
+         */
+        const enviarAcumulado = () => {
+          if (cancelado || cerrado) return
+          const crudo = textoParcialAcumulado.trim()
+          const limpio = autoMic() ? quitarComandoDeEscuchar(crudo) : crudo
+          if (!autoMic() && esComandoDejarDeEscuchar(crudo)) {
+            void vozSonido(session.server).sonidoSinVoz({}, opcionesSonido(session.server, session.directory)).catch(() => {})
+            desactivarAutoMic()
+            setDictado("libre")
+            cerrarDialogo()
+            ctx.toast.show({ title: "Charla contínua desactivada", variant: "default" })
+            return
+          }
+          if (!limpio) {
             void vozSonido(session.server).sonidoSinVoz({}, opcionesSonido(session.server, session.directory)).catch(() => {})
             setDictado("libre")
             cerrarDialogo()
-            ctx.toast.show({ title: "Grabación demasiado corta", variant: "default" })
+            ctx.toast.show({ title: "No se escuchó texto para enviar", variant: "default" })
             return
           }
-          setFase("transcribiendo")
-          setDictado("transcribiendo")
-          try {
-            const audioBase64 = await blobABase64(blob)
-            if (cancelado) return
-            const res = await transcribirDictado(session.server, session.directory, audioBase64, mimeType)
-            if (cancelado) return
-            if (res.error) {
-              void vozSonido(session.server).sonidoSinVoz({}, opcionesSonido(session.server, session.directory)).catch(() => {})
+          textoPegado = ""
+          textoVisto = false
+          textoDestinoId = ""
+          cancelarTimerTextoVacio()
+          setTexto(limpio)
+          setFase("confirmar")
+          setDictado("confirmar")
+          ponerTextoEnCompositor(limpio, session)
+          iniciarCuenta()
+        }
+
+        /**
+         * Arma un MediaRecorder para UN tramo. Al silencio se frena, se transcribe
+         * ese audio una sola vez y se arma otro distinto sobre el mismo micrófono.
+         */
+        const crearGrabadora = () => {
+          if (cancelado || cerrado || !flujoMic) return
+          const inicioTramoMs = performance.now()
+          mimeGrabacion =
+            ["audio/webm;codecs=opus", "audio/webm", "audio/mp4"].find((t) => MediaRecorder.isTypeSupported(t)) ?? ""
+          const recorder = mimeGrabacion
+            ? new MediaRecorder(flujoMic, { mimeType: mimeGrabacion })
+            : new MediaRecorder(flujoMic)
+          grabadora = recorder
+          fragmentos = []
+          vozEnTramo = false
+
+          recorder.ondataavailable = (ev) => {
+            if (ev.data && ev.data.size > 0) fragmentos.push(ev.data)
+          }
+
+          recorder.onstop = async () => {
+            const mimeFinal = recorder.mimeType || mimeGrabacion || "audio/webm"
+            const blob = new Blob(fragmentos, { type: mimeFinal })
+            const duracionMs = performance.now() - inicioTramoMs
+            fragmentos = []
+
+            if (cancelado || cerrado) {
               setDictado("libre")
-              cerrarDialogo()
-              ctx.toast.show({ title: "No se pudo transcribir el audio", description: res.error, variant: "error" })
               return
             }
-            const limpio = res.text.trim()
-            if (!limpio) {
+
+            if (cortePorSilencio) {
+              cortePorSilencio = false
+              const conVoz = vozEnTramo
+              // Feedback sonoro del corte. Se espera a que termine de sonar para
+              // que el proximo recorder no lo grabe como voz del siguiente tramo.
+              diagPlugin("corte: tocando beep suave")
+              await vozSonido(session.server).sonidoCorteTramo({}, opcionesSonido(session.server, session.directory)).catch(() => {})
+              // Sigue escuchando: nuevo recorder, audio nuevo, sin reenviar el viejo.
+              crearGrabadora()
+              if (!conVoz) {
+                // Silencio puro: Groq lo transcribe como "Gracias." inventado.
+                diagPlugin(`tramo sin voz descartado dur=${Math.round(duracionMs)}ms bytes=${blob.size}`)
+                return
+              }
+              if (duracionMs < TRAMO_MIN_MS) {
+                // Audio demasiado corto: tampoco vale la pena mandarlo.
+                diagPlugin(`tramo corto descartado dur=${Math.round(duracionMs)}ms bytes=${blob.size}`)
+                return
+              }
+              void transcribirTramo(blob, mimeFinal).then(procesarFrase)
+              return
+            }
+
+            // Paro manual / Enter: este es el último tramo.
+            detenerVad()
+            detenerTranscripcionParcial()
+            liberarMic()
+            if (sonarFinAlParar) {
+              sonarFinAlParar = false
+              void vozSonido(session.server).sonidoFinGrabacion({}, opcionesSonido(session.server, session.directory)).catch(() => {})
+            }
+            if (omitirTranscripcionFinal) {
+              omitirTranscripcionFinal = false
+              return
+            }
+            if (!audioUtil()) {
+              diagPlugin(`sin voz al parar: audioUtil=false bytes=${blob.size}`)
               void vozSonido(session.server).sonidoSinVoz({}, opcionesSonido(session.server, session.directory)).catch(() => {})
               setDictado("libre")
               cerrarDialogo()
               ctx.toast.show({ title: "No se escuchó texto para enviar", variant: "default" })
               return
             }
-            if (esComandoDejarDeEscuchar(limpio)) {
-              void vozSonido(session.server).sonidoSinVoz({}, opcionesSonido(session.server, session.directory)).catch(() => {})
-              desactivarAutoMic()
-              setDictado("libre")
-              cerrarDialogo()
-              ctx.toast.show({ title: "Auto-mic desactivado", variant: "default" })
+            if (!vozEnTramo || duracionMs < TRAMO_MIN_MS) {
+              // Silencio o audio corto: se descarta y se manda lo acumulado.
+              diagPlugin(`tramo final descartado dur=${Math.round(duracionMs)}ms bytes=${blob.size} voz=${vozEnTramo}`)
+              enviarAcumulado()
               return
             }
-            // Limpiamos el seguimiento ANTES de pasar a confirmar: si no, el effect
-            // reacciona al cambio de fase con el textoVisto del dictado anterior.
-            textoPegado = ""
-            textoVisto = false
-            textoDestinoId = ""
-            cancelarTimerTextoVacio()
-            setTexto(limpio)
-            setFase("confirmar")
-            setDictado("confirmar")
-            ponerTextoEnCompositor(limpio, session)
-            iniciarCuenta()
-          } catch (error) {
-            if (cancelado) return
-            void vozSonido(session.server).sonidoSinVoz({}, opcionesSonido(session.server, session.directory)).catch(() => {})
-            setDictado("libre")
-            const msg = error instanceof Error ? error.message : String(error)
-            cerrarDialogo()
-            ctx.toast.show({ title: "No se pudo transcribir el audio", description: msg, variant: "error" })
+            void transcribirTramo(blob, mimeFinal).then(enviarAcumulado)
           }
+
+          recorder.start(STT_TROZO_MS)
         }
 
         onMount(() => {
@@ -1755,30 +2079,9 @@ export default Plugin.define({
                 liberarMic()
                 return
               }
-              const mime =
-                ["audio/webm;codecs=opus", "audio/webm", "audio/mp4"].find((t) => MediaRecorder.isTypeSupported(t)) ??
-                ""
-              const recorder = mime ? new MediaRecorder(streamListo, { mimeType: mime }) : new MediaRecorder(streamListo)
-              grabadora = recorder
-
-              recorder.ondataavailable = (ev) => {
-                if (ev.data && ev.data.size > 0) fragmentos.push(ev.data)
-              }
-
-              recorder.onstop = () => {
-                const mimeFinal = recorder.mimeType || mime || "audio/webm"
-                const blob = new Blob(fragmentos, { type: mimeFinal })
-                fragmentos = []
-                detenerVad()
-                liberarMic()
-                if (cancelado || cerrado) {
-                  setDictado("libre")
-                  return
-                }
-                void transcribirBlob(blob, mimeFinal)
-              }
-
-              recorder.start()
+              crearGrabadora()
+              // Sin timer de transcripción: hablamos todo lo que queramos y el
+              // STT se llama recién cuando el VAD marca silencio (revisarFrasePorSilencio).
               detenerContador()
               timerGrabacion = setInterval(() => setSegundos((s) => s + 1), 1000)
               setDictado("grabando")
@@ -1786,6 +2089,7 @@ export default Plugin.define({
               iniciarVad(streamListo)
             } catch (error) {
               for (const pista of streamListo.getTracks()) pista.stop()
+              detenerTranscripcionParcial()
               detenerVad()
               liberarMic()
               setDictado("libre")
@@ -1808,6 +2112,7 @@ export default Plugin.define({
           window.removeEventListener("focusin", alEnfocarComposer, true)
           cancelarTimerTextoVacio()
           detenerVad()
+          detenerTranscripcionParcial()
           if (intervaloEnvio) {
             clearInterval(intervaloEnvio)
             intervaloEnvio = undefined
@@ -1823,6 +2128,9 @@ export default Plugin.define({
             } catch {
               // ignora
             }
+            detenerTranscripcionParcial()
+            textoParcialAcumulado = ""
+            textoParcialUltimo = ""
             fragmentos = []
             liberarMic()
             setDictado("libre")
@@ -1837,7 +2145,7 @@ export default Plugin.define({
           if (f === "abriendo") return "Abriendo micrófono…"
           if (f === "grabando") {
             if (grabacionPausada()) return "Grabación pausada"
-            return modoAuto ? "Escuchando (Auto-mic)" : "Grabando dictado"
+            return autoMic() ? "Escuchando (Charla contínua)" : "Grabando dictado"
           }
           if (f === "transcribiendo") return "Transcribiendo…"
           if (f === "error") return "Error al transcribir"
@@ -1851,8 +2159,8 @@ export default Plugin.define({
             if (grabacionPausada()) {
               return "Grabación en pausa. Tocá Reanudar para seguir dictando o Detener y transcribir para enviar."
             }
-            return modoAuto
-              ? "Auto-mic activo: se cierra solo en 8 segundos si no hablás. Enter detiene ya, Escape cancela."
+            return autoMic()
+              ? "Charla contínua activa: se cierra solo en 8 segundos si no hablás. Enter detiene ya, Escape cancela."
               : "Se cierra solo en 8 segundos si no hablás. Enter detiene ya, Escape cancela."
           }
           if (f === "transcribiendo") return "Procesando tu audio…"
@@ -1901,7 +2209,7 @@ export default Plugin.define({
           guardarEsperaSeg(valor)
         }
 
-        controlDictado = {
+        setControlDictado({
           detener: detenerYTranscribir,
           cancelar,
           pausar: alternarPausaGrabacion,
@@ -1931,7 +2239,7 @@ export default Plugin.define({
           audioUtil: () => audioUtil(),
           pausada: () => grabacionPausada(),
           restante: () => cuentaRestante(),
-        }
+        })
 
         return <div class="opencode-voz-dictado" style={{ display: "none" }} />
       })
@@ -1992,6 +2300,14 @@ export default Plugin.define({
             icon: "outline-dots",
             tone: "warning",
             title: "Audio esperando para sonar: arranca apenas esté libre el turno. Stop lo cancela",
+          }
+        }
+        if (actual.hablando && actual.sintetizando && !actual.reproduciendo && !actual.pausado) {
+          return {
+            label: "Sintetizando...",
+            icon: "outline-rotate-clockwise",
+            tone: "warning",
+            title: "Generando el audio de la respuesta: pasa a Pausar voz apenas empiece a sonar",
           }
         }
         if (actual.hablando) {
@@ -2112,7 +2428,7 @@ export default Plugin.define({
             icon: "stop",
             tone: "danger",
             title: "Frenar la grabación y enviar el mensaje",
-            run: () => controlDictado?.detener(),
+            run: () => controlDictado()?.detener(),
           }
         }
         if (actual === "transcribiendo") {
@@ -2131,7 +2447,7 @@ export default Plugin.define({
               icon: "outline-audio",
               tone: "success",
               title: "Enviar el texto que dejaste en el compositor",
-              run: () => controlDictado?.enviarAhora(),
+              run: () => controlDictado()?.enviarAhora(),
             }
           }
           return {
@@ -2139,7 +2455,7 @@ export default Plugin.define({
             icon: "outline-audio",
             tone: "warning",
             title: "Tocá para cancelar el envío automático y editar el texto",
-            run: () => controlDictado?.cancelarEnvio(),
+            run: () => controlDictado()?.cancelarEnvio(),
           }
         }
         return {
@@ -2157,10 +2473,10 @@ export default Plugin.define({
       order: 24,
       show: (): ComposerPillView | undefined => {
         if (dictado() !== "grabando") return undefined
-        const nivel = controlDictado?.nivel() ?? 0
+        const nivel = controlDictado()?.nivel() ?? 0
         const encendidos = Math.max(0, Math.min(8, Math.round((nivel / 100) * 8)))
         const barra = "█".repeat(encendidos) + "░".repeat(8 - encendidos)
-        const cuenta = controlDictado?.cuentaSilencio() ?? ""
+        const cuenta = controlDictado()?.cuentaSilencio() ?? ""
         return {
           label: `${barra}${cuenta ? ` ${cuenta}` : ""}`,
           icon: "outline-wave-audio",
@@ -2174,12 +2490,12 @@ export default Plugin.define({
       order: 20,
       show: (): ComposerPillView | undefined => {
         if (dictado() !== "grabando") return undefined
-        const pausada = controlDictado?.pausada() === true
+        const pausada = controlDictado()?.pausada() === true
         return {
           label: pausada ? "Reanudar" : "Pausar",
           icon: pausada ? "fill-triangle-down" : ctx.icons.pausa,
           title: pausada ? "Seguir grabando" : "Pausar la grabación",
-          run: () => controlDictado?.pausar(),
+          run: () => controlDictado()?.pausar(),
         }
       },
     })
@@ -2192,8 +2508,8 @@ export default Plugin.define({
         return {
           label: "Cancelar",
           icon: "circle-xmark",
-          title: "Descartar la grabación y volver a los botones normales",
-          run: () => controlDictado?.cancelar(),
+          title: "Frenar el dictado y conservar el texto del compositor para editarlo",
+          run: () => controlDictado()?.cancelar(),
         }
       },
     })
@@ -2210,11 +2526,11 @@ export default Plugin.define({
           title:
             faseActual === "confirmar"
               ? "Cancelar el envío automático y conservar el texto para editarlo"
-              : "Descartar la grabación y volver a los botones normales",
+              : "Frenar el dictado y conservar el texto del compositor para editarlo",
           run: () =>
             faseActual === "confirmar"
-              ? controlDictado?.cancelarConservandoTexto()
-              : controlDictado?.cancelar(),
+              ? controlDictado()?.cancelarConservandoTexto()
+              : controlDictado()?.cancelar(),
         }
       },
     })
@@ -2238,7 +2554,7 @@ export default Plugin.define({
       order: 23,
       show: (): ComposerPillView | undefined => {
         if (dictado() !== "grabando") return undefined
-        const util = controlDictado?.audioUtil() === true
+        const util = controlDictado()?.audioUtil() === true
         return {
           label: "Audio",
           icon: util ? "circle-check" : "circle-ban-sign",
@@ -2270,7 +2586,7 @@ export default Plugin.define({
         return {
           label: "Ajustes",
           icon: "settings-gear",
-          title: "Ajustes de voz: encender/apagar, auto-mic, género, motor, eco y espera del envío",
+          title: "Ajustes de voz: encender/apagar, Charla contínua, género, motor, eco y espera del envío",
           rows: [
             {
               id: "voz-on-off",
@@ -2282,7 +2598,7 @@ export default Plugin.define({
             },
             {
               id: "auto-mic",
-              label: "Auto-mic",
+              label: "Charla contínua",
               icon: "outline-wave-audio",
               tone: autoMic() ? "success" : undefined,
               detail: autoMic() ? "on" : "off",
@@ -2344,6 +2660,24 @@ export default Plugin.define({
       },
     })
 
+    ctx.add(ComposerPill, {
+      id: "auto-mic-pill",
+      order: 31,
+      show: (): ComposerPillView | undefined => {
+        // Prendido: a la derecha de Ajustes. Apagado: sigue solo dentro del menú.
+        if (apagada() || dictado() !== "libre" || !autoMic()) return undefined
+        return {
+          label: "Charla contínua",
+          icon: "outline-wave-audio",
+          tone: "success",
+          title: "Charla contínua prendida: el micrófono se abre solo tras cada respuesta. Clic para apagarla",
+          run: () => {
+            alternarAutoMic()
+          },
+        }
+      },
+    })
+
     ctx.add(Command, () => ({
       id: "corregir",
       title: "Vocabulario de voz (/corregir)",
@@ -2385,7 +2719,7 @@ export default Plugin.define({
 
     ctx.add(Command, () => ({
       id: "auto-mic",
-      title: "Activar o desactivar Auto-mic",
+      title: "Activar o desactivar Charla contínua",
       description: "Prende o apaga la apertura automática del micrófono tras cada respuesta dictada",
       run: () => {
         alternarAutoMic()
@@ -2513,7 +2847,7 @@ export default Plugin.define({
     }
 
     // Se suscribe al servidor de la sesión montada: en remoto, el servidor local de la app
-    // nunca emite los eventos del plugin y el Auto-mic no se enteraría de los turnos.
+    // nunca emite los eventos del plugin y la Charla contínua no se enteraría de los turnos.
     createEffect(() => {
       const server = ctx.sessions.current()?.server
       const cliente = (server?.client ?? ctx.client).rpc(Voz)

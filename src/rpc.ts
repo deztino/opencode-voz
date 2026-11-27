@@ -13,6 +13,8 @@ const ESTADO = {
   properties: {
     hablando: { type: "boolean" },
     enCola: { type: "boolean" },
+    sintetizando: { type: "boolean" },
+    reproduciendo: { type: "boolean" },
     pausado: { type: "boolean" },
     silenciado: { type: "boolean" },
     genero: { type: "string" },
@@ -235,6 +237,8 @@ export const Voz = Rpc.define({
     sonidoInicioDictado: { input: VACIO, output: VACIO },
     /** Reproduce el sonido al cortar la grabación del dictado. */
     sonidoFinGrabacion: { input: VACIO, output: VACIO },
+    /** Beep suave al cortar un tramo por silencio (espera a que termine de sonar). */
+    sonidoCorteTramo: { input: VACIO, output: VACIO },
     /** Reproduce un beep largo y agudo cuando el dictado no captó voz o falló. */
     sonidoSinVoz: { input: VACIO, output: VACIO },
     /** Agrega una palabra o frase al vocabulario de dictado. */

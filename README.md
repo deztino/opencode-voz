@@ -1,6 +1,6 @@
 # opencode-voz
 
-Plugin de OpenCode para macOS con ida y vuelta completa por voz: lee en voz alta
+Plugin de OpenCode **en español** y **solo para macOS** (no compatible con Windows ni Linux), con ida y vuelta completa por voz: lee en voz alta
 las respuestas del asistente y permite dictar mensajes por micrófono directo al
 chat desde la app de escritorio.
 
@@ -14,17 +14,22 @@ Podés ver el detalle completo de todas las funcionalidades en [`FEATURES.md`](.
   escritura muestra una barra horizontal de nivel con los segundos, **Pausar /
   Reanudar**, **Cancelar** y **Enviar voz**. Se ocultan las pills normales,
   incluida **Ajustes**, y vuelven al terminar.
-- **Ajustes en un solo menú:** la pill **"Ajustes"** abre un menú con Auto-mic,
+- **Ajustes en un solo menú:** la pill **"Ajustes"** abre un menú con Charla contínua,
   Voz (femenina/masculina), Motor (Auto/ElevenLabs/Groq), Eco, Espera para
   enviar (2/3/5/10/20 segundos, tocás para ciclar), Audio entre hilos
   (cortar anterior / esperar turno, lo mismo que `/cortar`) y Corregir
   vocabulario (abre la lista de palabras, lo mismo que `/corregir`). Reemplaza
   a las cuatro pills que estaban en la barra; en remoto estos controles apuntan
   al plugin local.
-- **El texto va al compositor:** al transcribir, se pega en el cuadro de
-  escritura y aparece **"Enviar en Ns"**; si lo tocás o editás el texto, se
-  cancela la cuenta y mandás con Enter cuando quieras. Un clic sin editar no
-  cancela el envío. Si había texto escrito antes, se preserva.
+- **El texto va al compositor:** al transcribir, se agrega al final de lo que
+  ya había escrito (con un espacio si hacía falta) y aparece **"Enviar en Ns"**;
+  si lo tocás o editás el texto, se cancela la cuenta y mandás con Enter cuando
+  quieras. Un clic sin editar no cancela el envío. Si había un borrador, sale
+  completo en el mensaje; si cancelás, el borrador se restaura. Con **Charla
+  contínua** prendida, la transcripción y la previsualización en el cuadro
+  ocurren **recién cuando hacés una pausa** (3 s de silencio), nunca mientras
+  seguís hablando, y al enviarse el cuadro queda limpio. En cada corte suena un
+  beep suave para avisarte de que se cerró ese tramo.
 - **Servidores remotos:** el dictado se transcribe en la Mac con las claves
   locales, así que no hace falta instalar el plugin ni las claves en el
   servidor. Las respuestas del servidor se leen también en la Mac, con el mismo
@@ -80,9 +85,9 @@ Podés ver el detalle completo de todas las funcionalidades en [`FEATURES.md`](.
   - Mientras grabás, la barra muestra **nivel de micrófono en 8 segmentos**
     (`████░░░░`) junto a los segundos, más **Pausar / Reanudar**, **Cancelar** y
     **Enviar voz**. `Enter` corta y transcribe al instante.
-  - Al transcribir, el texto se pega en el compositor con una cuenta regresiva
-    cancelable: tocá el pill **"Enviar en Ns"** para editar tranquilo y mandá
-    con Enter, o esperá a que se envíe solo.
+  - Al transcribir, el texto se agrega al final del compositor con una cuenta
+    regresiva cancelable: tocá el pill **"Enviar en Ns"** para editar tranquilo
+    y mandá con Enter, o esperá a que se envíe solo.
   - Transcribe con **ElevenLabs Scribe v3** o **Groq Whisper**, elegible desde
     **Ajustes > Motor** (automático con respaldo, o uno solo),
     usando vocabulario personalizado desde `~/.config/opencode/voz-vocabulario.md`,
@@ -90,12 +95,14 @@ Podés ver el detalle completo de todas las funcionalidades en [`FEATURES.md`](.
   - Cada intento queda en `~/.local/share/opencode/log/voz-dictado.log`
     (incluyendo si se envió vocabulario y cuántos términos/caracteres), y si
     falta la clave del motor elegido el popup avisa cuál falta.
-- **Modo Auto-mic on / off** (**Ajustes > Auto-mic**): mientras
+- **Modo Charla contínua on / off** (**Ajustes > Charla contínua**): mientras
   esté prendido vuelve a abrir el micrófono automáticamente al terminar cada
   respuesta (enviando siempre al hilo que respondió, aunque estés mirando otro,
   y salteando la tanda si estás escribiendo con teclado), cierra solo si pasan
-  8 segundos sin voz y se apaga con beep largo al decir **"dejar de escuchar"**
-  o **"deja de escuchar"**. En remoto se dispara con el evento local
+  8 segundos sin voz. Al decir **"dejar de escuchar"** o **"deja de escuchar"**
+  con la pill prendida (aunque hayas tocado Dictar), **envía el texto y sigue
+  escuchando**; con la pill apagada, apaga la Charla contínua con beep largo y
+  no envía. En remoto se dispara con el evento local
   `lecturaTerminada` (el plugin no ve los eventos del servidor ajeno, así que
   no emitía `turnoTerminado`).
 - **Efectos de sonido:** `assets/beep.wav` al abrir el popup de dictado,

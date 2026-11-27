@@ -1,5 +1,5 @@
 import { execFile, execFileSync, spawn, type ChildProcess } from "node:child_process"
-import { appendFileSync, existsSync, closeSync, mkdirSync, openSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
+import { appendFileSync, existsSync, closeSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -33,6 +33,9 @@ const SONIDO_FIN_LECTURA = join(DIR_ASSETS, "staplebops-02.aac")
 const SONIDO_ENVIO = join(DIR_ASSETS, "staplebops-02.aac")
 const SONIDO_FIN_GRABACION = join(DIR_ASSETS, "staplebops-01.aac")
 const SONIDO_SIN_VOZ = join(DIR_ASSETS, "beep-error.wav")
+const SONIDO_CORTE_TRAMO = join(DIR_ASSETS, "beep-tramo.wav")
+const DIR_AUDIO_DICTADO = join(process.env.HOME ?? tmpdir(), ".local/share/opencode/log/voz-audio")
+const MAX_AUDIOS_DICTADO = 30
 type GeneroVoz = "fem" | "masc"
 type MotorStt = "auto" | "elevenlabs" | "groq"
 type ModoConcurrencia = "cortar" | "esperar"
@@ -1005,14 +1008,37 @@ function promptParaGroq(terminos: string[]): string | undefined {
   return texto
 }
 
+/** Versión del plugin que escribe el log (actualizar junto con package.json). */
+const VERSION_LOG = "0.2.31"
 const RUTA_LOG_DICTADO = join(process.env.HOME ?? tmpdir(), ".local/share/opencode/log/voz-dictado.log")
 const MAX_LINEAS_LOG_DICTADO = 200
 const RUTA_LOG_REMOTO = join(process.env.HOME ?? tmpdir(), ".local/share/opencode/log/voz-remoto.log")
 
+/** Guarda en disco cada audio que se manda al STT, para poder recuperarlo. */
+function guardarAudioDictado(audioBase64: string, mimeType: string) {
+  try {
+    mkdirSync(DIR_AUDIO_DICTADO, { recursive: true })
+    const bytes = Buffer.from(audioBase64, "base64")
+    const ext = mimeType.includes("mp4") ? "m4a" : "webm"
+    const nombre = `${new Date().toISOString().replace(/[:.]/g, "-")}-${bytes.length}.${ext}`
+    writeFileSync(join(DIR_AUDIO_DICTADO, nombre), bytes)
+    const viejos = readdirSync(DIR_AUDIO_DICTADO)
+      .filter((n) => /\.(webm|m4a)$/.test(n))
+      .map((n) => ({ n, t: statSync(join(DIR_AUDIO_DICTADO, n)).mtimeMs }))
+      .sort((a, b) => b.t - a.t)
+    for (const viejo of viejos.slice(MAX_AUDIOS_DICTADO)) {
+      rmSync(join(DIR_AUDIO_DICTADO, viejo.n), { force: true })
+    }
+    registrarLogRemoto(`audio guardado nombre=${nombre} bytes=${bytes.length}`)
+  } catch {
+    // el backup es auxiliar: si falla, la transcripción sigue igual
+  }
+}
+
 function registrarLogRemoto(mensaje: string) {
   try {
     mkdirSync(dirname(RUTA_LOG_REMOTO), { recursive: true })
-    appendFileSync(RUTA_LOG_REMOTO, `${new Date().toISOString()} ${mensaje}\n`, "utf8")
+    appendFileSync(RUTA_LOG_REMOTO, `${new Date().toISOString()} v${VERSION_LOG} ${mensaje}\n`, "utf8")
   } catch {
     // diagnóstico auxiliar
   }
@@ -1031,7 +1057,7 @@ function registrarLogDictado(mensaje: string) {
     if (lineas.length >= MAX_LINEAS_LOG_DICTADO) {
       writeFileSync(RUTA_LOG_DICTADO, `${lineas.slice(-Math.floor(MAX_LINEAS_LOG_DICTADO / 2)).join("\n")}\n`, "utf8")
     }
-    appendFileSync(RUTA_LOG_DICTADO, `${new Date().toISOString()} ${mensaje}\n`, "utf8")
+    appendFileSync(RUTA_LOG_DICTADO, `${new Date().toISOString()} v${VERSION_LOG} ${mensaje}\n`, "utf8")
   } catch {
     // el log es auxiliar: si no se puede escribir, el dictado sigue igual
   }
@@ -1192,13 +1218,18 @@ function tmpFile(): string {
 export default Plugin.define({
   id: "voz",
   async setup(ctx) {
+    registrarLogRemoto(`arranque plugin v${VERSION_LOG}`)
     let genero: GeneroVoz = "fem"
     let motor: MotorStt = "auto"
     let muted = (await ctx.storage.get("muted")) === true
     let hablando = false
     let pausado = false
-    /** Hay audio encolado que todavía no empezó a sonar (esperando turno, síntesis o el turno de la cola). */
+    /** Hay audio encolado esperando a que termine el que está sonando (otra instancia u otra voz). */
     let enCola = false
+    /** Síntesis MP3 en vuelo: el pill muestra "Sintetizando..." hasta que empieza a sonar. */
+    let sintetizando = 0
+    /** Reproducciones en curso: con audio sonando el pill siempre dice "Pausar voz". */
+    let reproduciendo = 0
     let pendientes = 0
     let queue: Promise<void> = Promise.resolve()
     let generation = 0
@@ -1562,6 +1593,8 @@ export default Plugin.define({
       return {
         hablando,
         enCola,
+        sintetizando: sintetizando > 0,
+        reproduciendo: reproduciendo > 0,
         pausado,
         silenciado: muted,
         genero: generoActual(),
@@ -1573,6 +1606,20 @@ export default Plugin.define({
 
     function publicar() {
       avisar?.(estadoActual())
+    }
+
+    /** Prende o apaga el aviso de síntesis sin publicar cambios que no cambian el estado visible. */
+    function cambiarSintetizando(delta: number) {
+      const antes = sintetizando > 0
+      sintetizando = Math.max(0, sintetizando + delta)
+      if ((sintetizando > 0) !== antes) publicar()
+    }
+
+    /** Igual que la síntesis, pero para reproducción: evita mostrar "Sintetizando..." sobre audio que ya suena. */
+    function cambiarReproduciendo(delta: number) {
+      const antes = reproduciendo > 0
+      reproduciendo = Math.max(0, reproduciendo + delta)
+      if ((reproduciendo > 0) !== antes) publicar()
     }
 
     function marcarHablando(
@@ -1858,6 +1905,11 @@ export default Plugin.define({
       turnoEco = undefined
       pendientes = 0
       enCola = false
+      if (sintetizando > 0 || reproduciendo > 0) {
+        sintetizando = 0
+        reproduciendo = 0
+        publicar()
+      }
       bloques.clear()
       marcarHablando(false)
 
@@ -1885,7 +1937,9 @@ export default Plugin.define({
 
         const child = spawn(command, args, { stdio: [stdin === undefined ? "ignore" : "pipe", "ignore", "ignore"] })
         running.add(child)
-        if (enCola) {
+        if (esSay) cambiarReproduciendo(1)
+        // Solo la reproducción (say) saca de "En cola": sintetizar con edge-tts también pasa por run().
+        if (esSay && enCola) {
           enCola = false
           publicar()
         }
@@ -1907,6 +1961,7 @@ export default Plugin.define({
         const done = (ok: boolean) => {
           if (settled) return
           settled = true
+          if (esSay) cambiarReproduciendo(-1)
           if (vigilante) clearInterval(vigilante)
           running.delete(child)
           if (reproductorSay === child) reproductorSay = undefined
@@ -1935,12 +1990,20 @@ export default Plugin.define({
       turno?: string,
     ): Promise<boolean> {
       if (concurrenciaActual() !== "esperar") return true
+      if (otroHablando() && !enCola) {
+        enCola = true
+        publicar()
+      }
       while (otroHablando()) {
         if (gen !== generation) return false
         // El dictado manda siempre: aunque venga de un mensaje "forzado", no puede hablar encima.
         if ((!forzar && (muted || (sessionID && sesionApagada(sessionID)))) || dictandoEnCurso()) return false
         if (perdioTurnoVoz(turno)) return false
         await new Promise<void>((r) => setTimeout(r, 150))
+      }
+      if (enCola) {
+        enCola = false
+        publicar()
       }
       return (
         gen === generation &&
@@ -1956,12 +2019,15 @@ export default Plugin.define({
       sessionID?: string,
       turno?: string,
       forzar = false,
+      alEmpezar?: () => void,
     ): Promise<boolean> {
       if (!(await esperarSiPausado(gen))) return false
       if ((!forzar && sessionID && sesionApagada(sessionID)) || perdioTurnoVoz(turno)) return false
       const ctrl = `${file}.ctrl`
       borrarSilencioso(ctrl)
       archivoCtrl = ctrl
+      alEmpezar?.()
+      cambiarReproduciendo(1)
       if (enCola) {
         enCola = false
         publicar()
@@ -1999,6 +2065,7 @@ export default Plugin.define({
         })
         return ok && gen === generation && !perdioTurnoVoz(turno) && (forzar || !(sessionID && sesionApagada(sessionID)))
       } finally {
+        cambiarReproduciendo(-1)
         if (vigilante) clearInterval(vigilante)
         if (archivoCtrl === ctrl) archivoCtrl = undefined
         borrarSilencioso(ctrl)
@@ -2047,10 +2114,12 @@ export default Plugin.define({
       voiceOverride?: string,
       sessionID?: string,
       turno?: string,
+      alEmpezar?: () => void,
     ): Promise<boolean> {
       if (!(await esperarSiPausado(gen))) return false
       if (sessionID) sesionHablando = sessionID
       guardarEstadoHablando(true, { sessionID: sessionID ?? sesionHablando, turno })
+      alEmpezar?.()
       const args = ["-v", voiceOverride ?? vozSayActual()]
       if (SAY_RATE) args.push("-r", SAY_RATE)
       try {
@@ -2068,11 +2137,13 @@ export default Plugin.define({
       const turno = turnoActivo
       const guardarEnUltimo = Boolean(sessionID)
       pendientes += 1
-      if (!archivoCtrl && running.size === 0 && !enCola) {
+      const esperarOtro = concurrenciaActual() === "esperar" && otroHablando()
+      // "En cola" recién cuando algo está sonando: mientras se genera el MP3,
+      // el pill muestra "Sintetizando..." (gestionado por cambiarSintetizando).
+      if ((archivoCtrl || running.size > 0 || esperarOtro) && !enCola) {
         enCola = true
         publicar()
       }
-      const esperarOtro = concurrenciaActual() === "esperar" && otroHablando()
       if (!esperarOtro && sessionID) sesionHablando = sessionID
       marcarHablando(true, { escribirGlobal: !esperarOtro, sessionID, turno })
       const entradaSesion = sessionID ? mensajeAudioActual(sessionID) : undefined
@@ -2083,6 +2154,15 @@ export default Plugin.define({
 
       // Pre-genera el audio en paralelo mientras suena la oración anterior.
       const promesaArchivo = ENGINE === "edge" ? sintetizarEdge(text, gen) : undefined
+      let sintesisContada = Boolean(promesaArchivo)
+      if (sintesisContada) cambiarSintetizando(1)
+      // Se libera recién cuando empieza a sonar (no cuando está listo el MP3),
+      // para que el pill no pase a "Pausar voz" antes de tiempo.
+      const liberarSintesis = () => {
+        if (!sintesisContada) return
+        sintesisContada = false
+        cambiarSintetizando(-1)
+      }
 
       queue = queue.then(async () => {
         let interrumpido = false
@@ -2119,30 +2199,35 @@ export default Plugin.define({
                 entradaSesion.archivos.push(archivo)
                 guardarCacheAudios()
               }
-              const ok = await playMp3(archivo, gen, sessionID, turno, forzar)
+              const ok = await playMp3(archivo, gen, sessionID, turno, forzar, liberarSintesis)
               if (!guardarEnUltimo) borrarSilencioso(archivo)
               if (cortado()) {
                 interrumpido = true
                 return
               }
               if (!ok && gen === generation) {
-                await speakSay(text, gen, undefined, sessionID, turno)
+                await speakSay(text, gen, undefined, sessionID, turno, liberarSintesis)
                 if (cortado()) interrumpido = true
               }
               return
             }
           }
           if (!cortado()) {
-            await speakSay(text, gen, undefined, sessionID, turno)
+            await speakSay(text, gen, undefined, sessionID, turno, liberarSintesis)
             if (cortado()) interrumpido = true
           } else {
             interrumpido = true
           }
         } finally {
+          liberarSintesis()
           if (gen === generation) {
             pendientes = Math.max(0, pendientes - 1)
             if (pendientes === 0) {
               enCola = false
+              if (sintetizando > 0) {
+                sintetizando = 0
+                publicar()
+              }
               marcarHablando(false)
               if (!interrumpido && !muted && !dictandoEnCurso() && !sesionApagada(sessionID ?? sesionActiva)) {
                 reproducirEfecto(SONIDO_FIN_LECTURA)
@@ -2460,11 +2545,11 @@ export default Plugin.define({
       if (archivos.length > 0) {
         const gen = generation
         pendientes += archivos.length
-        if (!archivoCtrl && running.size === 0 && !enCola) {
+        const esperarOtro = concurrenciaActual() === "esperar" && otroHablando()
+        if ((archivoCtrl || running.size > 0 || esperarOtro) && !enCola) {
           enCola = true
           publicar()
         }
-        const esperarOtro = concurrenciaActual() === "esperar" && otroHablando()
         if (!esperarOtro) sesionHablando = id
         marcarHablando(true, { escribirGlobal: !esperarOtro, sessionID: id, turno })
         for (const archivo of archivos) {
@@ -2484,6 +2569,10 @@ export default Plugin.define({
                 pendientes = Math.max(0, pendientes - 1)
                 if (pendientes === 0) {
                   enCola = false
+                  if (sintetizando > 0) {
+                    sintetizando = 0
+                    publicar()
+                  }
                   marcarHablando(false)
                 }
               }
@@ -2610,6 +2699,7 @@ export default Plugin.define({
         },
         transcribir: async (input) => {
           const { audioBase64, mimeType } = input as { audioBase64: string; mimeType: string }
+          guardarAudioDictado(audioBase64, mimeType)
           return transcribirAudio(audioBase64, mimeType, motorActual())
         },
         sonidoEnvio: async () => {
@@ -2622,6 +2712,10 @@ export default Plugin.define({
         },
         sonidoFinGrabacion: async () => {
           reproducirEfecto(SONIDO_FIN_GRABACION)
+          return {}
+        },
+        sonidoCorteTramo: async () => {
+          await reproducirEfectoYEsperar(SONIDO_CORTE_TRAMO)
           return {}
         },
         sonidoSinVoz: async () => {
