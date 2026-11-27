@@ -7,11 +7,12 @@ const VACIO = {
   additionalProperties: false,
 } as const
 
-/** Estado de la voz: si está hablando, si está en pausa, si está silenciada, el género de voz, el motor de dictado, si el eco está prendido y el modo entre sesiones. */
+/** Estado de la voz: si está hablando, si el audio está encolado pero todavía no suena, si está en pausa, si está silenciada, el género de voz, el motor de dictado, si el eco está prendido y el modo entre sesiones. */
 const ESTADO = {
   type: "object",
   properties: {
     hablando: { type: "boolean" },
+    enCola: { type: "boolean" },
     pausado: { type: "boolean" },
     silenciado: { type: "boolean" },
     genero: { type: "string" },
@@ -19,7 +20,7 @@ const ESTADO = {
     eco: { type: "boolean" },
     concurrencia: { type: "string" },
   },
-  required: ["hablando", "pausado", "silenciado", "genero", "motor", "eco", "concurrencia"],
+  required: ["hablando", "enCola", "pausado", "silenciado", "genero", "motor", "eco", "concurrencia"],
   additionalProperties: false,
 } as const
 
@@ -61,6 +62,28 @@ const SESION_ENTRADA = {
     sessionID: { type: "string" },
   },
   required: ["sessionID"],
+  additionalProperties: false,
+} as const
+
+/** Posición y cantidad de audios guardados para navegarlos. */
+const ESTADO_AUDIOS = {
+  type: "object",
+  properties: {
+    actual: { type: "number" },
+    total: { type: "number" },
+  },
+  required: ["actual", "total"],
+  additionalProperties: false,
+} as const
+
+/** Entrada para moverse entre los audios guardados de una sesión. */
+const MOVER_AUDIO_ENTRADA = {
+  type: "object",
+  properties: {
+    sessionID: { type: "string" },
+    direccion: { type: "number" },
+  },
+  required: ["direccion"],
   additionalProperties: false,
 } as const
 
@@ -141,6 +164,7 @@ const TEXTO_PARA_LEER = {
   properties: {
     texto: { type: "string" },
     sessionID: { type: "string" },
+    msgId: { type: "string" },
   },
   required: ["texto"],
   additionalProperties: false,
@@ -197,6 +221,10 @@ export const Voz = Rpc.define({
     estadoSesion: { input: SESION_ENTRADA, output: SESION_APAGADA },
     /** Consulta si hay voz guardada para repetir en esa sesión. */
     tieneVoz: { input: SESION_ENTRADA, output: TIENE_VOZ },
+    /** Consulta la posición y cantidad de audios guardados en esa sesión. */
+    estadoAudios: { input: SESION_ENTRADA, output: ESTADO_AUDIOS },
+    /** Reproduce el audio anterior o siguiente (dirección -1 / +1). */
+    moverAudio: { input: MOVER_AUDIO_ENTRADA, output: ESTADO },
     /** Marca que el próximo mensaje del usuario se envía desde el dictado por voz. */
     marcarDictado: { input: VACIO, output: ESTADO },
     /** Transcribe audio grabado por el usuario con ElevenLabs o Groq. */

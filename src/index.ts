@@ -1197,6 +1197,8 @@ export default Plugin.define({
     let muted = (await ctx.storage.get("muted")) === true
     let hablando = false
     let pausado = false
+    /** Hay audio encolado que todavía no empezó a sonar (esperando turno, síntesis o el turno de la cola). */
+    let enCola = false
     let pendientes = 0
     let queue: Promise<void> = Promise.resolve()
     let generation = 0
@@ -1205,8 +1207,69 @@ export default Plugin.define({
     let archivoCtrl: string | undefined
     let esperarReanudar: (() => void) | undefined
     type UltimoMensajeSesion = { msgId: string; archivos: string[]; texto: string }
-    const MAX_SESIONES_ULTIMO = 20
-    const ultimosPorSesion = new Map<string, UltimoMensajeSesion>()
+    const MAX_AUDIOS_POR_SESION = 2
+    const MAX_SESIONES_AUDIO = 2
+    const ultimosPorSesion = new Map<string, UltimoMensajeSesion[]>()
+    const indiceAudioPorSesion = new Map<string, number>()
+
+    /** Caché de audios persistida: sin esto, recargar OpenCode vacía la memoria y "Escuchar" queda apagado. */
+    const CLAVE_CACHE_AUDIOS = "cacheAudios"
+    type CacheAudios = { sesiones?: [string, UltimoMensajeSesion[]][]; indices?: [string, number][] }
+    let timerGuardarCache: ReturnType<typeof setTimeout> | undefined
+
+    function guardarCacheAudios() {
+      if (timerGuardarCache) clearTimeout(timerGuardarCache)
+      timerGuardarCache = setTimeout(() => {
+        timerGuardarCache = undefined
+        try {
+          const valor: CacheAudios = {
+            sesiones: Array.from(ultimosPorSesion.entries()),
+            indices: Array.from(indiceAudioPorSesion.entries()),
+          }
+          void ctx.storage.set(CLAVE_CACHE_AUDIOS, valor)
+        } catch {
+          // si no se pudo guardar, la caché queda solo en memoria
+        }
+      }, 400)
+    }
+
+    async function cargarCacheAudios() {
+      try {
+        const guardado = (await ctx.storage.get(CLAVE_CACHE_AUDIOS)) as CacheAudios | undefined
+        if (!guardado?.sesiones?.length) return
+        for (const [sessionID, mensajes] of guardado.sesiones) {
+          if (typeof sessionID !== "string" || !Array.isArray(mensajes)) continue
+          const validos = mensajes
+            .filter(
+              (m) =>
+                m &&
+                typeof m.msgId === "string" &&
+                typeof m.texto === "string" &&
+                Array.isArray(m.archivos) &&
+                m.archivos.every((f) => typeof f === "string"),
+            )
+            .slice(-MAX_AUDIOS_POR_SESION)
+            .map((m) => ({ ...m, archivos: m.archivos.filter((f) => existsSync(f)) }))
+            .filter((m) => m.archivos.length > 0 || m.texto.trim().length > 0)
+          if (validos.length) ultimosPorSesion.set(sessionID, validos)
+          if (ultimosPorSesion.size > MAX_SESIONES_AUDIO) {
+            const primera = ultimosPorSesion.keys().next().value
+            if (primera && primera !== sessionID) ultimosPorSesion.delete(primera)
+          }
+        }
+        for (const [sessionID, indice] of guardado.indices ?? []) {
+          const mensajes = ultimosPorSesion.get(sessionID)
+          if (mensajes && typeof indice === "number" && indice >= 0) {
+            // El índice guardado puede quedar fuera de rango si se recortó la caché.
+            indiceAudioPorSesion.set(sessionID, Math.min(indice, mensajes.length - 1))
+          }
+        }
+      } catch {
+        // sin caché guardada: arranca vacío y se llena con lo que se lea ahora
+      }
+    }
+
+    await cargarCacheAudios()
     let mensajeActual: string | undefined
     let yaDijoTrabajando = false
     let ejecutando = false
@@ -1498,6 +1561,7 @@ export default Plugin.define({
     function estadoActual() {
       return {
         hablando,
+        enCola,
         pausado,
         silenciado: muted,
         genero: generoActual(),
@@ -1538,17 +1602,58 @@ export default Plugin.define({
     }
 
     function limpiarArchivosDeSesion(sessionID: string) {
-      const entrada = ultimosPorSesion.get(sessionID)
-      if (!entrada) return
-      for (const archivo of entrada.archivos) borrarSilencioso(archivo)
+      const mensajes = ultimosPorSesion.get(sessionID)
+      if (!mensajes) return
+      for (const mensaje of mensajes) {
+        for (const archivo of mensaje.archivos) borrarSilencioso(archivo)
+      }
       ultimosPorSesion.delete(sessionID)
+      indiceAudioPorSesion.delete(sessionID)
+      guardarCacheAudios()
     }
 
     function limpiarUltimosArchivos() {
-      for (const entrada of ultimosPorSesion.values()) {
-        for (const archivo of entrada.archivos) borrarSilencioso(archivo)
+      for (const mensajes of ultimosPorSesion.values()) {
+        for (const mensaje of mensajes) {
+          for (const archivo of mensaje.archivos) borrarSilencioso(archivo)
+        }
       }
       ultimosPorSesion.clear()
+      indiceAudioPorSesion.clear()
+      guardarCacheAudios()
+    }
+
+    function asegurarEntradaSesion(sessionID: string, msgId: string): UltimoMensajeSesion {
+      let mensajes = ultimosPorSesion.get(sessionID)
+      if (!mensajes) {
+        if (ultimosPorSesion.size >= MAX_SESIONES_AUDIO) {
+          const masVieja = ultimosPorSesion.keys().next().value
+          if (masVieja) limpiarArchivosDeSesion(masVieja)
+        }
+        mensajes = []
+        ultimosPorSesion.set(sessionID, mensajes)
+      }
+      if (!mensajes.length || mensajes[mensajes.length - 1].msgId !== msgId) {
+        mensajes.push({ msgId, archivos: [], texto: "" })
+        if (mensajes.length > MAX_AUDIOS_POR_SESION) {
+          const viejo = mensajes.shift()
+          if (viejo) {
+            for (const archivo of viejo.archivos) borrarSilencioso(archivo)
+          }
+        }
+        // Los mensajes se guardan de viejo a nuevo: por defecto apuntamos al último.
+        indiceAudioPorSesion.set(sessionID, mensajes.length - 1)
+      }
+      guardarCacheAudios()
+      return mensajes[mensajes.length - 1]
+    }
+
+    function mensajeAudioActual(sessionID?: string): UltimoMensajeSesion | undefined {
+      if (!sessionID) return undefined
+      const mensajes = ultimosPorSesion.get(sessionID)
+      if (!mensajes?.length) return undefined
+      const indice = Math.max(0, Math.min(mensajes.length - 1, indiceAudioPorSesion.get(sessionID) ?? mensajes.length - 1))
+      return mensajes[indice]
     }
 
     function pausarOReanudar() {
@@ -1752,6 +1857,7 @@ export default Plugin.define({
       sesionEco = undefined
       turnoEco = undefined
       pendientes = 0
+      enCola = false
       bloques.clear()
       marcarHablando(false)
 
@@ -1779,6 +1885,10 @@ export default Plugin.define({
 
         const child = spawn(command, args, { stdio: [stdin === undefined ? "ignore" : "pipe", "ignore", "ignore"] })
         running.add(child)
+        if (enCola) {
+          enCola = false
+          publicar()
+        }
         if (esSay) reproductorSay = child
         let vigilante: ReturnType<typeof setInterval> | undefined
         if (esSay && (sessionID || turno)) {
@@ -1827,11 +1937,17 @@ export default Plugin.define({
       if (concurrenciaActual() !== "esperar") return true
       while (otroHablando()) {
         if (gen !== generation) return false
-        if (!forzar && (muted || dictandoEnCurso() || (sessionID && sesionApagada(sessionID)))) return false
+        // El dictado manda siempre: aunque venga de un mensaje "forzado", no puede hablar encima.
+        if ((!forzar && (muted || (sessionID && sesionApagada(sessionID)))) || dictandoEnCurso()) return false
         if (perdioTurnoVoz(turno)) return false
         await new Promise<void>((r) => setTimeout(r, 150))
       }
-      return gen === generation && !perdioTurnoVoz(turno) && (forzar || !(sessionID && sesionApagada(sessionID)))
+      return (
+        gen === generation &&
+        !dictandoEnCurso() &&
+        !perdioTurnoVoz(turno) &&
+        (forzar || !(sessionID && sesionApagada(sessionID)))
+      )
     }
 
     async function playMp3(
@@ -1846,6 +1962,10 @@ export default Plugin.define({
       const ctrl = `${file}.ctrl`
       borrarSilencioso(ctrl)
       archivoCtrl = ctrl
+      if (enCola) {
+        enCola = false
+        publicar()
+      }
       if (sessionID) sesionHablando = sessionID
       guardarEstadoHablando(true, { sessionID: sessionID ?? sesionHablando, ctrl, turno })
       let vigilante: ReturnType<typeof setInterval> | undefined
@@ -1858,6 +1978,7 @@ export default Plugin.define({
             vigilante = setInterval(() => {
               if (
                 gen !== generation ||
+                dictandoEnCurso() ||
                 (!forzar && sessionID && sesionApagada(sessionID)) ||
                 perdioTurnoVoz(turno)
               ) {
@@ -1940,19 +2061,24 @@ export default Plugin.define({
     }
 
     function encolarFragmento(text: string, sessionID?: string, forzar = false) {
-      if ((muted || sesionApagada(sessionID ?? sesionActiva) || dictandoEnCurso()) && !forzar) return
+      if (dictandoEnCurso() || ((muted || sesionApagada(sessionID ?? sesionActiva)) && !forzar)) return
       // En Linux no hay say ni AVFoundation: el texto se lee en la máquina del usuario.
       if (process.platform !== "darwin") avisarTextoParaLeer?.(text, sessionID)
       const gen = generation
       const turno = turnoActivo
       const guardarEnUltimo = Boolean(sessionID)
       pendientes += 1
+      if (!archivoCtrl && running.size === 0 && !enCola) {
+        enCola = true
+        publicar()
+      }
       const esperarOtro = concurrenciaActual() === "esperar" && otroHablando()
       if (!esperarOtro && sessionID) sesionHablando = sessionID
       marcarHablando(true, { escribirGlobal: !esperarOtro, sessionID, turno })
-      const entradaSesion = sessionID ? ultimosPorSesion.get(sessionID) : undefined
+      const entradaSesion = sessionID ? mensajeAudioActual(sessionID) : undefined
       if (entradaSesion) {
         entradaSesion.texto = entradaSesion.texto ? `${entradaSesion.texto} ${text}` : text
+        guardarCacheAudios()
       }
 
       // Pre-genera el audio en paralelo mientras suena la oración anterior.
@@ -1963,7 +2089,7 @@ export default Plugin.define({
         const cortado = () =>
           gen !== generation ||
           perdioTurnoVoz(turno) ||
-          (!forzar && (muted || dictandoEnCurso() || sesionApagada(sessionID)))
+          ((!forzar && (muted || sesionApagada(sessionID))) || dictandoEnCurso())
         try {
           if (cortado()) {
             interrumpido = true
@@ -1989,7 +2115,10 @@ export default Plugin.define({
               return
             }
             if (archivo) {
-              if (entradaSesion) entradaSesion.archivos.push(archivo)
+              if (entradaSesion) {
+                entradaSesion.archivos.push(archivo)
+                guardarCacheAudios()
+              }
               const ok = await playMp3(archivo, gen, sessionID, turno, forzar)
               if (!guardarEnUltimo) borrarSilencioso(archivo)
               if (cortado()) {
@@ -2013,6 +2142,7 @@ export default Plugin.define({
           if (gen === generation) {
             pendientes = Math.max(0, pendientes - 1)
             if (pendientes === 0) {
+              enCola = false
               marcarHablando(false)
               if (!interrumpido && !muted && !dictandoEnCurso() && !sesionApagada(sessionID ?? sesionActiva)) {
                 reproducirEfecto(SONIDO_FIN_LECTURA)
@@ -2287,7 +2417,7 @@ export default Plugin.define({
     function prepararMensaje(sessionID: string, msgId: string) {
       limpiarHerramientasPendientes()
       const previo = ultimosPorSesion.get(sessionID)
-      if (previo?.msgId === msgId) return
+      if (previo?.[previo.length - 1]?.msgId === msgId) return
       const modo = concurrenciaActual()
       if (modo === "cortar") {
         const mismoEco = leyendoEcoUsuario && sesionEco === sessionID && Boolean(turnoEco)
@@ -2301,21 +2431,23 @@ export default Plugin.define({
       } else {
         turnoActivo = undefined
       }
-      limpiarArchivosDeSesion(sessionID)
-      if (ultimosPorSesion.size >= MAX_SESIONES_ULTIMO) {
-        const masVieja = ultimosPorSesion.keys().next().value
-        if (masVieja) limpiarArchivosDeSesion(masVieja)
-      }
-      ultimosPorSesion.set(sessionID, { msgId, archivos: [], texto: "" })
+      asegurarEntradaSesion(sessionID, msgId)
       mensajeActual = msgId
     }
 
-    function repetirUltimo(sessionID?: string) {
+    function repetirUltimo(sessionID?: string, indice?: number) {
       if (hablando) return
       const id = sessionID || sesionActiva
       if (!id) return
-      const entrada = ultimosPorSesion.get(id)
-      if (!entrada) return
+      const mensajes = ultimosPorSesion.get(id)
+      if (!mensajes?.length) return
+      const destino = Math.max(
+        0,
+        Math.min(mensajes.length - 1, indice ?? indiceAudioPorSesion.get(id) ?? mensajes.length - 1),
+      )
+      indiceAudioPorSesion.set(id, destino)
+      guardarCacheAudios()
+      const entrada = mensajes[destino]
       sesionActiva = id
       if (concurrenciaActual() === "cortar") {
         cortarAudioGlobal()
@@ -2328,19 +2460,32 @@ export default Plugin.define({
       if (archivos.length > 0) {
         const gen = generation
         pendientes += archivos.length
+        if (!archivoCtrl && running.size === 0 && !enCola) {
+          enCola = true
+          publicar()
+        }
         const esperarOtro = concurrenciaActual() === "esperar" && otroHablando()
         if (!esperarOtro) sesionHablando = id
         marcarHablando(true, { escribirGlobal: !esperarOtro, sessionID: id, turno })
         for (const archivo of archivos) {
           queue = queue.then(async () => {
             try {
-              if (gen !== generation || perdioTurnoVoz(turno)) return
+              if (gen !== generation || perdioTurnoVoz(turno) || dictandoEnCurso()) return
               if (!(await esperarTurnoLibre(gen, id, true, turno))) return
-              await playMp3(archivo, gen, id, turno, true)
+              const ok = await playMp3(archivo, gen, id, turno, true)
+              // Si el MP3 quedó viejo o el reproductor falla tras recargar, se sintetiza el texto.
+              if (!ok && gen === generation && entrada.texto && !dictandoEnCurso()) {
+                const texto = entrada.texto
+                entrada.texto = ""
+                encolarFragmento(texto, id, true)
+              }
             } finally {
               if (gen === generation) {
                 pendientes = Math.max(0, pendientes - 1)
-                if (pendientes === 0) marcarHablando(false)
+                if (pendientes === 0) {
+                  enCola = false
+                  marcarHablando(false)
+                }
               }
             }
           })
@@ -2431,11 +2576,31 @@ export default Plugin.define({
         tieneVoz: async (input) => {
           const { sessionID } = (input ?? {}) as { sessionID?: string }
           const id = sessionID || sesionActiva
-          const entrada = id ? ultimosPorSesion.get(id) : undefined
+          const entrada = mensajeAudioActual(id)
           const archivos = entrada?.archivos.filter((archivo) => existsSync(archivo)) ?? []
           return {
             tiene: Boolean(entrada && (archivos.length > 0 || (entrada.texto ?? "").trim().length > 0)),
           }
+        },
+        estadoAudios: async (input) => {
+          const { sessionID } = (input ?? {}) as { sessionID?: string }
+          const id = sessionID || sesionActiva
+          const total = id ? (ultimosPorSesion.get(id)?.length ?? 0) : 0
+          const actual = total
+            ? Math.max(0, Math.min(total - 1, id ? (indiceAudioPorSesion.get(id) ?? total - 1) : total - 1)) + 1
+            : 0
+          return { actual, total }
+        },
+        moverAudio: async (input) => {
+          const { sessionID, direccion } = (input ?? {}) as { sessionID?: string; direccion?: number }
+          const id = sessionID || sesionActiva
+          const mensajes = id ? ultimosPorSesion.get(id) : undefined
+          if (!id || !mensajes?.length) return estadoActual()
+          const actual = indiceAudioPorSesion.get(id) ?? mensajes.length - 1
+          const destino = Math.max(0, Math.min(mensajes.length - 1, actual + (direccion ?? 0)))
+          if (hablando || pausado) stopSpeaking()
+          repetirUltimo(id, destino)
+          return estadoActual()
         },
         marcarDictado: async () => {
           const hasta = Date.now() + 10_000
@@ -2475,9 +2640,17 @@ export default Plugin.define({
           return {}
         },
         leerTexto: async (input) => {
-          const { texto, sessionID } = (input ?? {}) as { texto?: string; sessionID?: string }
+          const { texto, sessionID, msgId } = (input ?? {}) as {
+            texto?: string
+            sessionID?: string
+            msgId?: string
+          }
           const limpio = texto?.trim() ?? ""
+          if (limpio && dictandoEnCurso()) {
+            registrarLogRemoto(`leerTexto BLOQUEADO por dictado sesion=${sessionID ?? "-"}`)
+          }
           if (limpio && !muted && !sesionActualApagada() && !dictandoEnCurso()) {
+            if (sessionID) asegurarEntradaSesion(sessionID, msgId || `remoto-${Date.now()}`)
             const info = leerEstadoHablandoInfo()
             const cortar =
               concurrenciaActual() === "cortar" &&
@@ -2497,6 +2670,9 @@ export default Plugin.define({
         estadoDictado: async (input) => {
           const { activo } = input as { activo: boolean }
           guardarEstadoDictando(activo)
+          registrarLogRemoto(
+            `estadoDictado activo=${activo} instancia=${INSTANCIA_ID} flag=${dictandoEnCurso()} hablando=${hablando}`,
+          )
           if (activo) {
             cancelarAutoEscucha()
             cortarAudioGlobal()
