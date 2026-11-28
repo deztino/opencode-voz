@@ -2002,7 +2002,7 @@ export default Plugin.define({
         const enviarAcumulado = () => {
           if (cancelado || cerrado) return
           const crudo = textoParcialAcumulado.trim()
-          const limpio = autoMic() ? quitarComandoDeEscuchar(crudo) : crudo
+          const limpio = quitarComandoDeEscuchar(crudo)
           if (!autoMic() && esComandoDejarDeEscuchar(crudo)) {
             void vozSonido(session.server).sonidoSinVoz({}, opcionesSonido(session.server, session.directory)).catch(() => {})
             desactivarAutoMic()
