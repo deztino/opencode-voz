@@ -451,7 +451,7 @@ const EDGE_VOICE_MASC = process.env.OPENCODE_TTS_MALE_VOICE ?? "es-HN-CarlosNeur
 const EDGE_RATE = process.env.OPENCODE_TTS_RATE ?? "+0%"
 
 const SAY_PREFERRED = process.env.OPENCODE_TTS_SAY_VOICE ?? "Mónica"
-const SAY_PREFERRED_MASC = process.env.OPENCODE_TTS_SAY_MALE_VOICE ?? "Jorge"
+const SAY_PREFERRED_MASC = process.env.OPENCODE_TTS_SAY_MALE_VOICE ?? "Carlos"
 const SAY_RATE = process.env.OPENCODE_TTS_RATE_SAY
 
 /** Busca la mejor variante instalada (Premium > Enhanced > normal). */
@@ -1029,7 +1029,7 @@ function promptParaGroq(terminos: string[]): string | undefined {
 }
 
 /** Versión del plugin que escribe el log (actualizar junto con package.json). */
-const VERSION_LOG = "0.2.34"
+const VERSION_LOG = "0.2.35"
 const RUTA_LOG_DICTADO = join(process.env.HOME ?? tmpdir(), ".local/share/opencode/log/voz-dictado.log")
 const MAX_LINEAS_LOG_DICTADO = 200
 const RUTA_LOG_REMOTO = join(process.env.HOME ?? tmpdir(), ".local/share/opencode/log/voz-remoto.log")
@@ -1592,7 +1592,10 @@ export default Plugin.define({
 
     /** Nombre corto de la voz que lee, para mostrar en Ajustes (p. ej. "Edge - Dalia MX"). */
     function vozParaMostrar(): string {
-      if (motorVozActual() === "say") return `macOS - ${vozSayActual()}`
+      if (motorVozActual() === "say") {
+        const nombre = vozSayActual().replace(/\s*\((?:Enhanced|Premium|mejorada|mejorado)\)\s*$/i, "")
+        return `macOS - ${nombre}`
+      }
       const id = vozEdgeActual()
       const partes = id.match(/^es-([a-z]{2})-(.+?)Neural$/i)
       return `Edge - ${partes ? `${partes[2]} ${partes[1].toUpperCase()}` : id}`

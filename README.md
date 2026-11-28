@@ -184,7 +184,7 @@ Genera `dist/gui-experimental.cjs`, que es lo que carga la app de escritorio.
 | `OPENCODE_TTS_MALE_VOICE` | voz masculina de `edge-tts` (por defecto `es-HN-CarlosNeural`) |
 | `OPENCODE_TTS_RATE` | velocidad de `edge-tts` (por ejemplo `+10%`) |
 | `OPENCODE_TTS_SAY_VOICE` | voz femenina de respaldo de macOS (por defecto `Mónica`) |
-| `OPENCODE_TTS_SAY_MALE_VOICE` | voz masculina de respaldo de macOS (por defecto `Jorge`) |
+| `OPENCODE_TTS_SAY_MALE_VOICE` | voz masculina de respaldo de macOS (por defecto `Carlos`) |
 | `OPENCODE_TTS_RATE_SAY` | palabras por minuto de `say` |
 | `ELEVENLABS_API_KEY` | clave para transcripción con ElevenLabs Scribe |
 | `GROQ_API_KEY` | clave alternativa para transcripción con Groq Whisper |

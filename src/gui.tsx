@@ -2617,7 +2617,7 @@ export default Plugin.define({
             },
             {
               id: "genero",
-              label: "Voz",
+              label: "Género de Voz",
               icon: "outline-audio",
               detail: actual.vozTts ?? (esMasc ? "masculina" : "femenina"),
               run: cambiar(cambiarGenero),

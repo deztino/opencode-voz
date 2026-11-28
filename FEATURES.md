@@ -136,7 +136,7 @@ dist/gui-experimental.cjs  Paquete compilado de la interfaz gráfica (generado c
 | `OPENCODE_TTS_MALE_VOICE` | Voz masculina de `edge-tts` | `es-HN-CarlosNeural` |
 | `OPENCODE_TTS_RATE` | Velocidad de `edge-tts` (ej. `+10%`) | `+0%` |
 | `OPENCODE_TTS_SAY_VOICE` | Voz femenina de respaldo de macOS `say` | `Mónica` |
-| `OPENCODE_TTS_SAY_MALE_VOICE` | Voz masculina de respaldo de macOS `say` | `Jorge` |
+| `OPENCODE_TTS_SAY_MALE_VOICE` | Voz masculina de respaldo de macOS `say` | `Carlos` |
 | `OPENCODE_TTS_RATE_SAY` | Palabras por minuto de `say` | predeterminada del sistema |
 | `ELEVENLABS_API_KEY` | Clave API para ElevenLabs Speech-to-Text | — |
 | `GROQ_API_KEY` | Clave API de respaldo para Groq Whisper | — |
