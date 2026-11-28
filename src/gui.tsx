@@ -812,6 +812,15 @@ export default Plugin.define({
       }
     }
 
+    const cambiarMotorVoz = async (directory?: string, server?: Servidor) => {
+      try {
+        const { rpc, opts } = vozEstado(server ?? sesionActual()?.server, directory)
+        setEstado((await rpc.cambiarMotorVoz({}, opts)) as Estado)
+      } catch {
+        // si el servidor no contesta, no cambia el motor de lectura
+      }
+    }
+
     const cambiarMotor = async (directory?: string, server?: Servidor) => {
       try {
         const { rpc, opts } = vozEstado(server ?? sesionActual()?.server, directory)
