@@ -505,22 +505,26 @@ function resolveSayVoice(preferred: string): string {
 const SAY_VOICE_FEM = resolveSayVoice(SAY_PREFERRED)
 const SAY_VOICE_MASC = resolveSayVoice(SAY_PREFERRED_MASC)
 
-type ReglasLimpieza = { reglas: Array<[string, string]>; codigoCorto: boolean }
+type ReglasLimpieza = { reglas: Array<[string, string]>; codigo: "leer" | "decir" | "omitir" }
 
 /** Lee las reglas del usuario en voz-limpieza.md en cada llamada: se recargan solas. */
 function leerReglasLimpieza(): ReglasLimpieza {
-  const resultado: ReglasLimpieza = { reglas: [], codigoCorto: true }
+  const resultado: ReglasLimpieza = { reglas: [], codigo: "leer" }
   try {
     if (!existsSync(RUTA_REGLAS_LIMPIEZA)) return resultado
     for (const linea of readFileSync(RUTA_REGLAS_LIMPIEZA, "utf8").split(/\r?\n/)) {
       const limpia = linea.trim()
       if (!limpia || limpia.startsWith(";")) continue
       if (/^codigo_corto\s*=\s*(?:omitir|no|off)$/iu.test(limpia)) {
-        resultado.codigoCorto = false
+        resultado.codigo = "omitir"
         continue
       }
-      if (/^codigo_corto\s*=\s*(?:decir|si|on)$/iu.test(limpia)) {
-        resultado.codigoCorto = true
+      if (/^codigo_corto\s*=\s*(?:decir|anunciar|on)$/iu.test(limpia)) {
+        resultado.codigo = "decir"
+        continue
+      }
+      if (/^codigo_corto\s*=\s*(?:leer|si|texto)$/iu.test(limpia)) {
+        resultado.codigo = "leer"
         continue
       }
       const flecha = limpia.indexOf("->")
@@ -537,11 +541,12 @@ function leerReglasLimpieza(): ReglasLimpieza {
 
 function clean(markdown: string): string {
   const reglas = leerReglasLimpieza()
-  const textoCodigo = reglas.codigoCorto ? " bloque de código " : " "
+  const textoCodigo = reglas.codigo === "decir" ? " bloque de código " : " "
+  const reemplazoCodigo = (interior: string) => (reglas.codigo === "leer" ? ` ${interior} ` : textoCodigo)
   let text = markdown
     .replace(/\u001b\[[0-9;]*[A-Za-z]/g, "")
-    .replace(/```[\s\S]*?```/g, textoCodigo)
-    .replace(/`[^`\n]*`/g, textoCodigo)
+    .replace(/```([\s\S]*?)```/g, (_todo, interior: string) => reemplazoCodigo(interior))
+    .replace(/`([^`\n]*)`/g, (_todo, interior: string) => reemplazoCodigo(interior))
     .replace(/!\[[^\]]*\]\([^)]*\)/g, " ")
     .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
     .replace(/https?:\/\/\S+/g, " ")
@@ -1083,7 +1088,7 @@ function promptParaGroq(terminos: string[]): string | undefined {
 }
 
 /** Versión del plugin que escribe el log (actualizar junto con package.json). */
-const VERSION_LOG = "0.2.42"
+const VERSION_LOG = "0.2.43"
 const RUTA_LOG_DICTADO = join(process.env.HOME ?? tmpdir(), ".local/share/opencode/log/voz-dictado.log")
 const MAX_LINEAS_LOG_DICTADO = 200
 const RUTA_LOG_REMOTO = join(process.env.HOME ?? tmpdir(), ".local/share/opencode/log/voz-remoto.log")
@@ -2861,6 +2866,30 @@ export default Plugin.define({
         },
         listarVocabulario: async () => {
           return { terminos: cargarVocabulario(), ruta: rutaVocabulario() }
+        },
+        leerReglas: async () => {
+          try {
+            const contenido = existsSync(RUTA_REGLAS_LIMPIEZA)
+              ? readFileSync(RUTA_REGLAS_LIMPIEZA, "utf8")
+              : ""
+            return { contenido, ruta: RUTA_REGLAS_LIMPIEZA }
+          } catch {
+            return { contenido: "", ruta: RUTA_REGLAS_LIMPIEZA }
+          }
+        },
+        guardarReglas: async (input) => {
+          const contenido = String((input as { contenido?: string } | undefined)?.contenido ?? "")
+          try {
+            mkdirSync(dirname(RUTA_REGLAS_LIMPIEZA), { recursive: true })
+            writeFileSync(RUTA_REGLAS_LIMPIEZA, contenido, "utf8")
+            return { ok: true, ruta: RUTA_REGLAS_LIMPIEZA }
+          } catch (error) {
+            return {
+              ok: false,
+              ruta: RUTA_REGLAS_LIMPIEZA,
+              error: error instanceof Error ? error.message : String(error),
+            }
+          }
         },
         logDiagnostico: async (input) => {
           registrarLogRemoto(((input as { mensaje?: string })?.mensaje ?? "").slice(0, 300))

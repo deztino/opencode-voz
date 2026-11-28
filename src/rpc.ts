@@ -155,6 +155,35 @@ const DICTADO_ESTADO = {
   additionalProperties: false,
 } as const
 
+/** Contenido editable del archivo de reglas de limpieza antes de leer. */
+const REGLAS_ARCHIVO = {
+  type: "object",
+  properties: {
+    contenido: { type: "string" },
+    ruta: { type: "string" },
+  },
+  required: ["contenido", "ruta"],
+  additionalProperties: false,
+} as const
+
+const REGLAS_ENTRADA = {
+  type: "object",
+  properties: { contenido: { type: "string" } },
+  required: ["contenido"],
+  additionalProperties: false,
+} as const
+
+const REGLAS_GUARDADAS = {
+  type: "object",
+  properties: {
+    ok: { type: "boolean" },
+    ruta: { type: "string" },
+    error: { type: "string" },
+  },
+  required: ["ok", "ruta"],
+  additionalProperties: false,
+} as const
+
 /** Mensaje de diagnóstico de la lectura remota. */
 const DIAGNOSTICO = {
   type: "object",
@@ -252,6 +281,10 @@ export const Voz = Rpc.define({
     agregarVocabulario: { input: VOCAB_ENTRADA, output: VOCAB_RESULTADO },
     /** Devuelve las palabras actuales del vocabulario de dictado. */
     listarVocabulario: { input: VACIO, output: VOCAB_LISTA },
+    /** Lee el archivo editable de reglas de limpieza antes de leer en voz alta. */
+    leerReglas: { input: VACIO, output: REGLAS_ARCHIVO },
+    /** Guarda el archivo editable de reglas de limpieza. */
+    guardarReglas: { input: REGLAS_ENTRADA, output: REGLAS_GUARDADAS },
     /** Indica al servidor si el dictado está abierto para bloquear lectura y avisos. */
     estadoDictado: { input: DICTADO_ESTADO, output: ESTADO },
     /** Lee en voz alta en esta máquina un texto que mandó un servidor remoto. */

@@ -93,7 +93,7 @@ Reproducidos de forma nativa en macOS mediante `afplay`:
 - `/cortar`: Alterna entre cortar el audio de otra sesión (por defecto) o esperar turno.
 - `/corregir palabra`: Agrega una palabra o frase al vocabulario de dictado.
 - `/corregir` o `/corregir lista`: Muestra la lista actual del vocabulario y permite agregar nuevos términos.
-- **Reglas de limpieza antes de leer:** el archivo `~/.config/opencode/voz-limpieza.md` (editable, se recarga solo) lleva reglas `texto a buscar -> texto que se dice`; el lado derecho vacío borra y las líneas con `;` son comentarios. Precargadas: `*` suprimido, `#` → "número" y `codigo_corto=decir` para que los bloques de código cortitos se lean como "bloque de código" en vez de saltearse y fragmentar la frase.
+- **Reglas de limpieza antes de leer:** se editan desde **Ajustes > Reglas de lectura** (y desde la paleta, "Editar reglas de lectura"), en `~/.config/opencode/voz-limpieza.md`. Formato `texto a buscar -> texto que se dice`; el lado derecho vacío borra y las líneas con `;` son comentarios. Precargadas: `*` suprimido, `#` → "número" y `codigo_corto=leer` para que se lea el contenido de los bloques de código en vez de saltearse y fragmentar la frase (las otras opciones son `decir` → "bloque de código" y `omitir`). Se recarga sola al guardar.
 - **Otras frases para cortar:** "dejar de dictar" / "deja de dictar" (además de "dejar de escuchar" y "parar dictado"). El "Gracias." que Groq agrega después de cualquiera de esas frases se descarta antes de seguir, y los tramos cortitos sin voz no se mandan al proveedor.
 - **Paleta de comandos:**
   - Vocabulario de voz (`/corregir`)

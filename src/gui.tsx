@@ -1062,6 +1062,113 @@ export default Plugin.define({
       }, 0)
     }
 
+    const guardarReglasContenido = async (contenido: string) => {
+      try {
+        const { rpc, opts } = vozEstado(sesionActual()?.server, carpetaActual())
+        const res = (await rpc.guardarReglas({ contenido }, opts)) as {
+          ok: boolean
+          ruta: string
+          error?: string
+        }
+        if (!res.ok) {
+          ctx.toast.show({
+            title: "No se pudieron guardar las reglas",
+            description: res.error,
+            variant: "error",
+          })
+          return
+        }
+        ctx.toast.show({ title: "Reglas guardadas", description: res.ruta, variant: "success" })
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error)
+        ctx.toast.show({ title: "Error al guardar las reglas", description: msg, variant: "error" })
+      }
+    }
+
+    const abrirDialogoReglas = () => {
+      soltarFocoBoton()
+      setTimeout(() => {
+        if (desmontado) return
+        runWithOwner(rootOwner, () => {
+          ctx.dialogs.open((dialog) => {
+            const [contenido, setContenido] = createSignal("")
+            const [ruta, setRuta] = createSignal("")
+            const [cargando, setCargando] = createSignal(true)
+            let campo: HTMLTextAreaElement | undefined
+
+            const cerrar = () => {
+              dialog.close()
+              enfocarCuadroTexto()
+            }
+
+            const guardar = () => {
+              cerrar()
+              void guardarReglasContenido(contenido())
+            }
+
+            onMount(() => {
+              void (async () => {
+                try {
+                  const { rpc, opts } = vozEstado(sesionActual()?.server, carpetaActual())
+                  const res = (await rpc.leerReglas({}, opts)) as { contenido: string; ruta: string }
+                  setContenido(res.contenido ?? "")
+                  setRuta(res.ruta ?? "")
+                } catch {
+                  setContenido("")
+                } finally {
+                  setCargando(false)
+                  setTimeout(() => campo?.focus(), 0)
+                }
+              })()
+            })
+
+            return (
+              <ctx.ui.Dialog
+                title="Reglas de lectura"
+                description="Formato: texto a buscar -> texto que se dice. Lado derecho vacío para borrar. Las líneas con ; son comentarios. Se aplican solas al guardar."
+                footer={
+                  <div style={{ display: "flex", gap: "8px", "justify-content": "flex-end" }}>
+                    <ctx.ui.Button variant="neutral" onClick={cerrar}>
+                      Cerrar
+                    </ctx.ui.Button>
+                    <ctx.ui.Button variant="contrast" disabled={cargando()} onClick={guardar}>
+                      Guardar
+                    </ctx.ui.Button>
+                  </div>
+                }
+              >
+                <div style={{ display: "flex", "flex-direction": "column", gap: "8px" }}>
+                  <textarea
+                    ref={campo}
+                    aria-label="Reglas de lectura"
+                    placeholder="palabra a buscar -> palabra que se dice"
+                    value={contenido()}
+                    onInput={(e) => setContenido(e.currentTarget.value)}
+                    rows={12}
+                    style={{
+                      width: "100%",
+                      padding: "10px",
+                      "border-radius": "6px",
+                      border: "1px solid currentColor",
+                      background: "transparent",
+                      color: "inherit",
+                      font: "inherit",
+                      "box-sizing": "border-box",
+                      resize: "vertical",
+                      outline: "none",
+                    }}
+                  />
+                  <span style={{ "font-size": "12px", opacity: 0.7, "user-select": "text" }}>
+                    {cargando() ? "Cargando…" : ruta()}
+                  </span>
+                </div>
+              </ctx.ui.Dialog>
+            )
+          })
+        })
+      }, 0)
+    }
+
     type DestinoDictado = {
       id: string
       directory: string
@@ -2736,6 +2843,12 @@ export default Plugin.define({
               icon: "edit",
               run: abrirDialogoVocabulario,
             },
+            {
+              id: "reglas-lectura",
+              label: "Reglas de lectura",
+              icon: "edit",
+              run: abrirDialogoReglas,
+            },
           ],
         }
       },
@@ -2833,6 +2946,15 @@ export default Plugin.define({
       description: "Graba tu voz y manda el mensaje directo al asistente",
       run: () => {
         alternarDictado()
+      },
+    }))
+
+    ctx.add(Command, () => ({
+      id: "reglas-lectura",
+      title: "Editar reglas de lectura",
+      description: "Cambia las equivalencias de lo que se lee en voz alta",
+      run: () => {
+        abrirDialogoReglas()
       },
     }))
 
