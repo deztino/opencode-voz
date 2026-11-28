@@ -114,16 +114,6 @@ function normalizarParaComando(texto: string): string {
     .trim()
 }
 
-function esComandoDejarDeEscuchar(texto: string): boolean {
-  const normalizado = normalizarParaComando(texto)
-  return (
-    normalizado === "dejar de escuchar" ||
-    normalizado === "deja de escuchar" ||
-    normalizado === "parar dictado" ||
-    normalizado === "para dictado"
-  )
-}
-
 /**
  * Para la revisión del texto acumulado: la frase cuenta como comando solo si
  * cierra lo que dijiste. Si la nombrás en medio ("no dije la palabra dejar de
@@ -420,6 +410,8 @@ export default Plugin.define({
     let timerPulso: ReturnType<typeof setInterval> | undefined
     let dialogoAbierto = false
     let detenerActivo: (() => void) | undefined
+    /** La frase "dejar de escuchar" cierra el mic sin apagar Charla contínua. */
+    let escuchaPausada = false
     let ultimaTeclaEn = 0
 
     const cancelarTimerAutoMic = () => {
@@ -537,6 +529,7 @@ export default Plugin.define({
       setAutoMic(nuevo)
       guardarAutoMic(nuevo)
       if (!nuevo) cancelarTimerAutoMic()
+      else escuchaPausada = false
       enfocarCuadroTexto()
     }
 
@@ -1193,6 +1186,7 @@ export default Plugin.define({
     })
 
     const abrirDictado = (modoAuto = false, destino?: DestinoDictado) => {
+      if (!modoAuto) escuchaPausada = false
       // El acumulado es por dictado: nunca puede arrastrar texto del anterior.
       textoParcialAcumulado = ""
       textoParcialUltimo = ""
@@ -1577,11 +1571,12 @@ export default Plugin.define({
           }
         }
 
-        /** Apaga Charla contínua y cierra el mic cuando la frase no manda texto. */
-        const apagarEscucha = (motivo: string) => {
-          diagPlugin(`tramo ${motivo}: apagando Charla contínua`)
+        /** Cierra el mic sin enviar; Charla contínua queda prendida pero no reabre hasta que hables a mano. */
+        const dejarDeEscuchar = (motivo: string) => {
+          diagPlugin(`tramo ${motivo}: dejando de escuchar`)
           void vozSonido(session.server).sonidoSinVoz({}, opcionesSonido(session.server, session.directory)).catch(() => {})
-          desactivarAutoMic()
+          escuchaPausada = true
+          cancelarTimerAutoMic()
           detenerVad()
           detenerTranscripcionParcial()
           try {
@@ -1592,49 +1587,18 @@ export default Plugin.define({
           liberarMic()
           setDictado("libre")
           cerrarDialogo()
-          ctx.toast.show({ title: "Charla contínua desactivada", variant: "default" })
+          ctx.toast.show({ title: "Dejé de escuchar", variant: "default" })
         }
 
         /**
-         * Si el acumulado termina con "dejar de escuchar": apaga Charla contínua
-         * o envía el texto sin la frase, según el estado de la pill.
+         * Si el acumulado termina con "dejar de escuchar": deja de escuchar sin
+         * enviar y sin tocar el interruptor de Charla contínua.
          */
         const procesarFrase = () => {
           if (cancelado || cerrado) return
           if (!terminaConComandoDeEscuchar(textoParcialAcumulado)) return
           diagPlugin("tramo frase detectada al silencio")
-          if (!autoMic()) {
-            apagarEscucha("comando con la pill apagada")
-            return
-          }
-          const texto = quitarComandoDeEscuchar(textoParcialAcumulado)
-          textoParcialAcumulado = ""
-          textoParcialUltimo = ""
-          if (!texto) {
-            // "Dejar de escuchar" dicho solo: no hay mensaje que enviar, pero
-            // tiene que dejar de escuchar igual (antes seguía con el mic abierto).
-            apagarEscucha("comando sin texto")
-            return
-          }
-          diagPlugin(`tramo comando enviar chars=${texto.length}`)
-          textoPegado = ""
-          textoVisto = false
-          textoDestinoId = ""
-          cancelarTimerTextoVacio()
-          setTexto(texto)
-          setFase("confirmar")
-          setDictado("confirmar")
-          ponerTextoEnCompositor(texto, session)
-          iniciarCuenta()
-          // El texto ya está listo: no hace falta transcribir el tramo al cerrar.
-          omitirTranscripcionFinal = true
-          detenerVad()
-          detenerTranscripcionParcial()
-          try {
-            if (grabadora && grabadora.state !== "inactive") grabadora.stop()
-          } catch {
-            // ignora si ya frenó
-          }
+          dejarDeEscuchar("frase detectada al silencio")
         }
 
         /**
@@ -2003,12 +1967,8 @@ export default Plugin.define({
           if (cancelado || cerrado) return
           const crudo = textoParcialAcumulado.trim()
           const limpio = quitarComandoDeEscuchar(crudo)
-          if (!autoMic() && esComandoDejarDeEscuchar(crudo)) {
-            void vozSonido(session.server).sonidoSinVoz({}, opcionesSonido(session.server, session.directory)).catch(() => {})
-            desactivarAutoMic()
-            setDictado("libre")
-            cerrarDialogo()
-            ctx.toast.show({ title: "Charla contínua desactivada", variant: "default" })
+          if (terminaConComandoDeEscuchar(crudo)) {
+            dejarDeEscuchar("comando al cerrar")
             return
           }
           if (!limpio) {
@@ -2900,6 +2860,7 @@ export default Plugin.define({
     const programarAutoMic = (idEvento?: string, dirEvento?: string, origen = "turno") => {
       const txt = (motivo: string) => `autoMic[${origen}]: ${motivo}`
       if (desmontado) return diagPlugin(txt("desmontado"))
+      if (escuchaPausada) return diagPlugin(txt("pausada por frase"))
       if (!autoMic()) return diagPlugin(txt("off"))
       if (dialogoAbierto || dictado() !== "libre") return diagPlugin(txt(`ocupado=${dictado()}`))
       if (usuarioEscribiendo()) return diagPlugin(txt("escribiendo"))

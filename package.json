@@ -1,6 +1,6 @@
 {
   "name": "opencode-voz",
-  "version": "0.2.39",
+  "version": "0.2.40",
   "description": "Plugin de voz en español para OpenCode Desktop, solo para macOS (no compatible con Windows ni Linux): lectura en streaming (TTS) y dictado por micrófono (STT) con VAD y Charla contínua",
   "license": "MIT",
   "author": "deztino",

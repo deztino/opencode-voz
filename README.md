@@ -106,12 +106,9 @@ Podés ver el detalle completo de todas las funcionalidades en [`FEATURES.md`](.
   esté prendido vuelve a abrir el micrófono automáticamente al terminar cada
   respuesta (enviando siempre al hilo que respondió, aunque estés mirando otro,
   y salteando la tanda si estás escribiendo con teclado), cierra solo si pasan
-  8 segundos sin voz. Al decir **"dejar de escuchar"**, **"deja de escuchar"**, **"parar dictado"** o **"para dictado"**
-  con la pill prendida (aunque hayas tocado Hablar), **envía el texto y sigue
-  escuchando**; con la pill apagada, apaga la Charla contínua con beep largo y
-  no envía. En remoto se dispara con el evento local
+  8 segundos sin voz. En remoto se dispara con el evento local
   `lecturaTerminada` (el plugin no ve los eventos del servidor ajeno, así que
-  no emitía `turnoTerminado`).
+  no emitía `turnoTerminado`). La frase **"dejar de escuchar"** (o "deja de escuchar", "parar dictado", "para dictado") **siempre deja de escuchar sin enviar**: cierra el mic, suena el beep y muestra el aviso, pero **no apaga la pill**. El mic sigue cerrado hasta que lo abrás a mano con **Hablar** (o prendas de nuevo Charla contínua).
 - **Efectos de sonido:** `assets/beep.wav` al abrir el popup de dictado,
   `assets/beep-error.wav` (largo y agudo) si pasan 8 segundos sin voz, al
   apagar Auto-mic por voz o si falla la transcripción, `assets/staplebops-01.aac`
