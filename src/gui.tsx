@@ -815,7 +815,10 @@ export default Plugin.define({
     const cambiarMotorVoz = async (directory?: string, server?: Servidor) => {
       try {
         const { rpc, opts } = vozEstado(server ?? sesionActual()?.server, directory)
-        setEstado((await rpc.cambiarMotorVoz({}, opts)) as Estado)
+        const res = (await rpc.cambiarMotorVoz({}, opts)) as Estado
+        setEstado(res)
+        const nombre = res.motorVoz === "say" ? "macOS" : "Edge"
+        ctx.toast.show({ title: `Motor cambiado a ${nombre}: hacé /reload para aplicarlo`, variant: "default" })
       } catch {
         // si el servidor no contesta, no cambia el motor de lectura
       }
