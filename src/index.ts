@@ -36,6 +36,7 @@ const SONIDO_SIN_VOZ = join(DIR_ASSETS, "beep-error.wav")
 const SONIDO_CORTE_TRAMO = join(DIR_ASSETS, "beep-tramo.wav")
 const DIR_AUDIO_DICTADO = join(process.env.HOME ?? tmpdir(), ".local/share/opencode/log/voz-audio")
 const MAX_AUDIOS_DICTADO = 30
+const RUTA_REGLAS_LIMPIEZA = join(process.env.HOME ?? "", ".config/opencode/voz-limpieza.md")
 type GeneroVoz = "fem" | "masc"
 type MotorStt = "auto" | "elevenlabs" | "groq"
 type ModoConcurrencia = "cortar" | "esperar"
@@ -504,11 +505,43 @@ function resolveSayVoice(preferred: string): string {
 const SAY_VOICE_FEM = resolveSayVoice(SAY_PREFERRED)
 const SAY_VOICE_MASC = resolveSayVoice(SAY_PREFERRED_MASC)
 
+type ReglasLimpieza = { reglas: Array<[string, string]>; codigoCorto: boolean }
+
+/** Lee las reglas del usuario en voz-limpieza.md en cada llamada: se recargan solas. */
+function leerReglasLimpieza(): ReglasLimpieza {
+  const resultado: ReglasLimpieza = { reglas: [], codigoCorto: true }
+  try {
+    if (!existsSync(RUTA_REGLAS_LIMPIEZA)) return resultado
+    for (const linea of readFileSync(RUTA_REGLAS_LIMPIEZA, "utf8").split(/\r?\n/)) {
+      const limpia = linea.trim()
+      if (!limpia || limpia.startsWith(";")) continue
+      if (/^codigo_corto\s*=\s*(?:omitir|no|off)$/iu.test(limpia)) {
+        resultado.codigoCorto = false
+        continue
+      }
+      if (/^codigo_corto\s*=\s*(?:decir|si|on)$/iu.test(limpia)) {
+        resultado.codigoCorto = true
+        continue
+      }
+      const flecha = limpia.indexOf("->")
+      if (flecha < 0) continue
+      const buscar = limpia.slice(0, flecha).trim()
+      const reemplazo = limpia.slice(flecha + 2).trim()
+      if (buscar) resultado.reglas.push([buscar, reemplazo])
+    }
+  } catch {
+    // ignora el archivo si no se puede leer
+  }
+  return resultado
+}
+
 function clean(markdown: string): string {
+  const reglas = leerReglasLimpieza()
+  const textoCodigo = reglas.codigoCorto ? " bloque de código " : " "
   let text = markdown
     .replace(/\u001b\[[0-9;]*[A-Za-z]/g, "")
-    .replace(/```[\s\S]*?```/g, " ")
-    .replace(/`[^`\n]*`/g, " ")
+    .replace(/```[\s\S]*?```/g, textoCodigo)
+    .replace(/`[^`\n]*`/g, textoCodigo)
     .replace(/!\[[^\]]*\]\([^)]*\)/g, " ")
     .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
     .replace(/https?:\/\/\S+/g, " ")
@@ -518,6 +551,8 @@ function clean(markdown: string): string {
     .replace(/\s+/g, " ")
     .trim()
 
+  for (const [buscar, reemplazo] of reglas.reglas) text = text.split(buscar).join(reemplazo)
+  text = text.replace(/\s+/g, " ").trim()
   if (text.length > MAX_CHARS) text = `${text.slice(0, MAX_CHARS)}…`
   return text
 }
@@ -1048,7 +1083,7 @@ function promptParaGroq(terminos: string[]): string | undefined {
 }
 
 /** Versión del plugin que escribe el log (actualizar junto con package.json). */
-const VERSION_LOG = "0.2.41"
+const VERSION_LOG = "0.2.42"
 const RUTA_LOG_DICTADO = join(process.env.HOME ?? tmpdir(), ".local/share/opencode/log/voz-dictado.log")
 const MAX_LINEAS_LOG_DICTADO = 200
 const RUTA_LOG_REMOTO = join(process.env.HOME ?? tmpdir(), ".local/share/opencode/log/voz-remoto.log")

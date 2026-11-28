@@ -119,6 +119,8 @@ function esComandoDejarDeEscuchar(texto: string): boolean {
   return (
     normalizado === "dejar de escuchar" ||
     normalizado === "deja de escuchar" ||
+    normalizado === "dejar de dictar" ||
+    normalizado === "deja de dictar" ||
     normalizado === "parar dictado" ||
     normalizado === "para dictado"
   )
@@ -130,13 +132,13 @@ function esComandoDejarDeEscuchar(texto: string): boolean {
  * escuchar...") no debe disparar: eso fue un falso positivo el 27/11.
  */
 function terminaConComandoDeEscuchar(texto: string): boolean {
-  return /(?:(?:dejar|deja)\s+de\s+escuchar|par(?:ar|a)\s+(?:el\s+)?dictado)$/iu.test(normalizarParaComando(texto))
+  return /(?:(?:dejar|deja)\s+de\s+(?:escuchar|dictar)|par(?:ar|a)\s+(?:el\s+)?dictado)$/iu.test(normalizarParaComando(texto))
 }
 
 /** Saca solo la frase comando final para que no se envíe como mensaje. */
 function quitarComandoDeEscuchar(texto: string): string {
   return texto
-    .replace(/\b(?:dejar|dej[áa])\s+de\s+escuchar\b[.!?¡!…]*\s*$/iu, "")
+    .replace(/\b(?:dejar|dej[áa])\s+de\s+(?:escuchar|dictar)\b[.!?¡!…]*\s*$/iu, "")
     .replace(/\bpar(?:ar|[áa])\s+(?:el\s+)?dictado\b[.!?¡!…]*\s*$/iu, "")
     .replace(/\s+/g, " ")
     .trim()
@@ -1560,7 +1562,9 @@ export default Plugin.define({
             // comando. Eso hace que no se detecte "dejar de escuchar" al final y
             // que el texto quede abajo sin enviarse (reportado por el usuario).
             const crudo = res.text.trim()
-            const texto = crudo.replace(/((?:dejar|deja)\s+de\s+escuchar)[.!?…]*\s+gracias[.!?…]*\s*$/iu, "$1").trim()
+            const texto = crudo
+              .replace(/((?:dejar|deja)\s+de\s+(?:escuchar|dictar)|par(?:ar|a)\s+(?:el\s+)?dictado)[.!?…]*\s+gracias[.!?…]*\s*$/iu, "$1")
+              .trim()
             if (texto !== crudo) diagPlugin('tramo: "Gracias." fantasma después de la frase, descartado')
             if (!texto) return
             textoParcialAcumulado = textoParcialAcumulado ? `${textoParcialAcumulado} ${texto}` : texto

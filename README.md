@@ -122,6 +122,8 @@ Podés ver el detalle completo de todas las funcionalidades en [`FEATURES.md`](.
 - `/cortar` — Alterna entre cortar el audio de otra sesión (por defecto) o esperar turno.
 - `/corregir palabra` — Agrega una palabra o frase al vocabulario de dictado.
 - `/corregir` o `/corregir lista` — Muestra las palabras guardadas y permite sumar nuevas.
+- **Reglas de lectura:** editá `~/.config/opencode/voz-limpieza.md` con reglas `texto a buscar -> texto que se dice` (lado derecho vacío para borrar, líneas con `;` son comentarios). Viene con `*` suprimido, `#` → "número" y bloques de código dichos como "bloque de código"; se recarga sola.
+- **Frases para cortar:** "dejar de escuchar", "deja de escuchar", "dejar de dictar", "deja de dictar", "parar dictado" y "para dictado" (misma regla intencional: con charla prendida envía lo dictado y sigue escuchando; con la charla apagada cierra sin enviar). El "Gracias." que el reconocimiento agrega después de esas frases se descarta.
 - Paleta de comandos: **Vocabulario de voz (`/corregir`)**, **Cortar audio de
   otro hilo (`/cortar`)**, **Cambiar voz femenina o masculina**, **Activar o
   desactivar Auto-mic**, **Hablar mensaje por voz**, **Pausar o seguir la voz**,
