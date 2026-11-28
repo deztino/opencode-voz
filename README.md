@@ -15,8 +15,8 @@ Podés ver el detalle completo de todas las funcionalidades en [`FEATURES.md`](.
   Reanudar**, **Cancelar** y **Enviar voz**. Se ocultan las pills normales,
   incluida **Ajustes**, y vuelven al terminar.
 - **Ajustes en un solo menú:** la pill **"Ajustes"** abre un menú con Charla contínua,
-  APAGAR VOZ PLUGIN, Charla contínua, Parar dictado (iguala a "dejar de
-  escuchar"), Género de Voz, Motor de lectura (Edge / macOS), Motor de dictado
+  APAGAR VOZ PLUGIN, Charla contínua, Género de Voz, Motor de lectura (Edge /
+  macOS), Motor de dictado
   (Auto/ElevenLabs/Groq), Eco, Permisos en voz alta, Espera para enviar y
   Espera en charla contínua (2/3/5/10/20 segundos, tocás para ciclar cada una),
   Audio entre hilos (cortar anterior / esperar turno, lo mismo que `/cortar`) y
@@ -106,7 +106,7 @@ Podés ver el detalle completo de todas las funcionalidades en [`FEATURES.md`](.
   esté prendido vuelve a abrir el micrófono automáticamente al terminar cada
   respuesta (enviando siempre al hilo que respondió, aunque estés mirando otro,
   y salteando la tanda si estás escribiendo con teclado), cierra solo si pasan
-  8 segundos sin voz. Al decir **"dejar de escuchar"** o **"deja de escuchar"**
+  8 segundos sin voz. Al decir **"dejar de escuchar"**, **"deja de escuchar"**, **"parar dictado"** o **"para dictado"**
   con la pill prendida (aunque hayas tocado Hablar), **envía el texto y sigue
   escuchando**; con la pill apagada, apaga la Charla contínua con beep largo y
   no envía. En remoto se dispara con el evento local

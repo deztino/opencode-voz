@@ -116,7 +116,12 @@ function normalizarParaComando(texto: string): string {
 
 function esComandoDejarDeEscuchar(texto: string): boolean {
   const normalizado = normalizarParaComando(texto)
-  return normalizado === "dejar de escuchar" || normalizado === "deja de escuchar"
+  return (
+    normalizado === "dejar de escuchar" ||
+    normalizado === "deja de escuchar" ||
+    normalizado === "parar dictado" ||
+    normalizado === "para dictado"
+  )
 }
 
 /**
@@ -125,13 +130,14 @@ function esComandoDejarDeEscuchar(texto: string): boolean {
  * escuchar...") no debe disparar: eso fue un falso positivo el 27/11.
  */
 function terminaConComandoDeEscuchar(texto: string): boolean {
-  return /(?:dejar|deja)\s+de\s+escuchar$/iu.test(normalizarParaComando(texto))
+  return /(?:(?:dejar|deja)\s+de\s+escuchar|par(?:ar|a)\s+(?:el\s+)?dictado)$/iu.test(normalizarParaComando(texto))
 }
 
 /** Saca solo la frase comando final para que no se envíe como mensaje. */
 function quitarComandoDeEscuchar(texto: string): string {
   return texto
     .replace(/\b(?:dejar|dej[áa])\s+de\s+escuchar\b[.!?¡!…]*\s*$/iu, "")
+    .replace(/\bpar(?:ar|[áa])\s+(?:el\s+)?dictado\b[.!?¡!…]*\s*$/iu, "")
     .replace(/\s+/g, " ")
     .trim()
 }
@@ -414,7 +420,6 @@ export default Plugin.define({
     let timerPulso: ReturnType<typeof setInterval> | undefined
     let dialogoAbierto = false
     let detenerActivo: (() => void) | undefined
-    let detenerEscuchaActivo: (() => void) | undefined
     let ultimaTeclaEn = 0
 
     const cancelarTimerAutoMic = () => {
@@ -532,19 +537,6 @@ export default Plugin.define({
       setAutoMic(nuevo)
       guardarAutoMic(nuevo)
       if (!nuevo) cancelarTimerAutoMic()
-      enfocarCuadroTexto()
-    }
-
-    /** Igual que decir "dejar de escuchar" con la pill apagada: frena el mic sin enviar. */
-    const pararDictado = async () => {
-      soltarFocoBoton()
-      desactivarAutoMic()
-      if (detenerEscuchaActivo) {
-        detenerEscuchaActivo()
-      } else {
-        void ctx.client.rpc(Voz).sonidoSinVoz({}).catch(() => {})
-        ctx.toast.show({ title: "Charla contínua desactivada", variant: "default" })
-      }
       enfocarCuadroTexto()
     }
 
@@ -1830,7 +1822,6 @@ export default Plugin.define({
           cerrado = true
           dialogoAbierto = false
           detenerActivo = undefined
-          detenerEscuchaActivo = undefined
           setControlDictado(undefined)
           detenerTranscripcionParcial()
           vistaPreviaTexto = ""
@@ -1964,7 +1955,6 @@ export default Plugin.define({
         }
 
         detenerActivo = detenerYTranscribir
-        detenerEscuchaActivo = () => apagarEscucha("parar desde Ajustes")
 
         const alEnfocarComposer = (e: FocusEvent) => {
           if (dictado() !== "confirmar") return
@@ -2181,7 +2171,6 @@ export default Plugin.define({
             cerrado = true
             dialogoAbierto = false
             detenerActivo = undefined
-            detenerEscuchaActivo = undefined
             void avisarDictado(false)
             try {
               if (grabadora && grabadora.state !== "inactive") grabadora.stop()
@@ -2664,12 +2653,6 @@ export default Plugin.define({
               tone: autoMic() ? "success" : undefined,
               detail: autoMic() ? "on" : "off",
               run: alternarAutoMic,
-            },
-            {
-              id: "parar-dictado",
-              label: "Parar dictado",
-              icon: "circle-ban-sign",
-              run: cambiar(pararDictado),
             },
             {
               id: "genero",
