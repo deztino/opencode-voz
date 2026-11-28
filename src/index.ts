@@ -49,6 +49,7 @@ const ARCHIVO_ESTADO_MOTOR = join(tmpdir(), "opencode-tts-motor-estado.json")
 const ARCHIVO_ESTADO_MOTOR_VOZ = join(tmpdir(), "opencode-tts-motor-voz-estado.json")
 const ARCHIVO_ESTADO_SESIONES_APAGADAS = join(tmpdir(), "opencode-tts-sesiones-apagadas.json")
 const ARCHIVO_ESTADO_ECO_ACTIVO = join(tmpdir(), "opencode-tts-eco-activo-estado.json")
+const ARCHIVO_ESTADO_PERMISOS_VOZ = join(tmpdir(), "opencode-tts-permisos-voz-estado.json")
 const ARCHIVO_ESTADO_CONCURRENCIA = join(tmpdir(), "opencode-tts-concurrencia-estado.json")
 const ARCHIVO_ESTADO_DICTADO = join(tmpdir(), "opencode-tts-dictado-estado.json")
 const ARCHIVO_ESTADO_DICTANDO = join(tmpdir(), "opencode-tts-dictando-estado.json")
@@ -141,6 +142,24 @@ function leerEstadoEcoActivo(): boolean | undefined {
   try {
     if (!existsSync(ARCHIVO_ESTADO_ECO_ACTIVO)) return undefined
     const data = JSON.parse(readFileSync(ARCHIVO_ESTADO_ECO_ACTIVO, "utf8")) as { activo?: unknown }
+    return typeof data.activo === "boolean" ? data.activo : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function guardarEstadoPermisosVoz(activo: boolean) {
+  try {
+    writeFileSync(ARCHIVO_ESTADO_PERMISOS_VOZ, JSON.stringify({ activo, ts: Date.now() }))
+  } catch {
+    // ignora
+  }
+}
+
+function leerEstadoPermisosVoz(): boolean | undefined {
+  try {
+    if (!existsSync(ARCHIVO_ESTADO_PERMISOS_VOZ)) return undefined
+    const data = JSON.parse(readFileSync(ARCHIVO_ESTADO_PERMISOS_VOZ, "utf8")) as { activo?: unknown }
     return typeof data.activo === "boolean" ? data.activo : undefined
   } catch {
     return undefined
@@ -1029,7 +1048,7 @@ function promptParaGroq(terminos: string[]): string | undefined {
 }
 
 /** Versión del plugin que escribe el log (actualizar junto con package.json). */
-const VERSION_LOG = "0.2.36"
+const VERSION_LOG = "0.2.37"
 const RUTA_LOG_DICTADO = join(process.env.HOME ?? tmpdir(), ".local/share/opencode/log/voz-dictado.log")
 const MAX_LINEAS_LOG_DICTADO = 200
 const RUTA_LOG_REMOTO = join(process.env.HOME ?? tmpdir(), ".local/share/opencode/log/voz-remoto.log")
@@ -1512,6 +1531,20 @@ export default Plugin.define({
       return ecoActivo
     }
 
+    let permisosVozActivo = (await ctx.storage.get("permisosVoz")) !== false
+    const permisosCompartidos = leerEstadoPermisosVoz()
+    if (permisosCompartidos !== undefined) {
+      permisosVozActivo = permisosCompartidos
+    } else if (!permisosVozActivo) {
+      guardarEstadoPermisosVoz(false)
+    }
+
+    function permisosVozActual(): boolean {
+      const compartido = leerEstadoPermisosVoz()
+      if (compartido !== undefined && compartido !== permisosVozActivo) permisosVozActivo = compartido
+      return permisosVozActivo
+    }
+
     let concurrencia: ModoConcurrencia =
       (process.env.OPENCODE_TTS_CONCURRENCIA ?? "cortar").toLowerCase() === "esperar" ? "esperar" : "cortar"
     const savedConcurrencia = await ctx.storage.get("concurrencia")
@@ -1646,6 +1679,7 @@ export default Plugin.define({
         motorVoz: motorVozActual(),
         motor: motorActual(),
         eco: ecoActual(),
+        permisosVoz: permisosVozActual(),
         concurrencia: concurrenciaActual(),
       }
     }
@@ -2703,6 +2737,13 @@ export default Plugin.define({
           publicar()
           return estadoActual()
         },
+        alternarPermisosVoz: async () => {
+          permisosVozActivo = !permisosVozActual()
+          guardarEstadoPermisosVoz(permisosVozActivo)
+          await ctx.storage.set("permisosVoz", permisosVozActivo)
+          publicar()
+          return estadoActual()
+        },
         alternarConcurrencia: async () => {
           concurrencia = concurrenciaActual() === "cortar" ? "esperar" : "cortar"
           guardarEstadoConcurrencia(concurrencia)
@@ -2943,7 +2984,7 @@ export default Plugin.define({
           if (event.type === "permission.asked") {
             esperandoPermiso = true
             limpiarTimerTrabajando()
-            if (!muted && firstTimeFor(`perm-${event.id}`)) {
+            if (!muted && permisosVozActual() && firstTimeFor(`perm-${event.id}`)) {
               precalentar()
               decirAviso("Permiso pendiente.", true)
             }
@@ -2952,7 +2993,7 @@ export default Plugin.define({
 
           if (event.type === "permission.replied") {
             esperandoPermiso = false
-            if (!muted && firstTimeFor(`perm-reply-${event.id}`)) {
+            if (!muted && permisosVozActual() && firstTimeFor(`perm-reply-${event.id}`)) {
               const frase = FRASES_PERMISO_RESPUESTA[event.data.reply]
               if (frase) decirAviso(frase, true)
             }

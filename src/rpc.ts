@@ -22,6 +22,7 @@ const ESTADO = {
     motorVoz: { type: "string" },
     motor: { type: "string" },
     eco: { type: "boolean" },
+    permisosVoz: { type: "boolean" },
     concurrencia: { type: "string" },
   },
   required: ["hablando", "enCola", "pausado", "silenciado", "genero", "motor", "eco", "concurrencia"],
@@ -219,6 +220,8 @@ export const Voz = Rpc.define({
     cambiarMotor: { input: VACIO, output: ESTADO },
     /** Prende o apaga el eco del usuario, "Trabajando." y avisos de herramientas. */
     alternarEco: { input: VACIO, output: ESTADO },
+    /** Prende o apaga los avisos de permisos en voz alta. */
+    alternarPermisosVoz: { input: VACIO, output: ESTADO },
     /** Alterna entre cortar el audio de otra sesión o esperar turno. */
     alternarConcurrencia: { input: VACIO, output: ESTADO },
     /** Apaga o prende el plugin de voz completo (lectura y micrófono) en una sesión. */

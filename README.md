@@ -15,16 +15,22 @@ Podés ver el detalle completo de todas las funcionalidades en [`FEATURES.md`](.
   Reanudar**, **Cancelar** y **Enviar voz**. Se ocultan las pills normales,
   incluida **Ajustes**, y vuelven al terminar.
 - **Ajustes en un solo menú:** la pill **"Ajustes"** abre un menú con Charla contínua,
-  Voz (femenina/masculina), Motor (Auto/ElevenLabs/Groq), Eco, Espera para
-  enviar (2/3/5/10/20 segundos, tocás para ciclar), Audio entre hilos
-  (cortar anterior / esperar turno, lo mismo que `/cortar`) y Corregir
-  vocabulario (abre la lista de palabras, lo mismo que `/corregir`). Reemplaza
-  a las cuatro pills que estaban en la barra; en remoto estos controles apuntan
-  al plugin local.
+  APAGAR VOZ PLUGIN, Charla contínua, Parar dictado (iguala a "dejar de
+  escuchar"), Género de Voz, Motor de lectura (Edge / macOS), Motor de dictado
+  (Auto/ElevenLabs/Groq), Eco, Permisos en voz alta, Espera para enviar y
+  Espera en charla contínua (2/3/5/10/20 segundos, tocás para ciclar cada una),
+  Audio entre hilos (cortar anterior / esperar turno, lo mismo que `/cortar`) y
+  Corregir vocabulario (abre la lista de palabras, lo mismo que `/corregir`).
+  Reemplaza a las cuatro pills que estaban en la barra; en remoto estos
+  controles apuntan al plugin local. A la derecha de **Charla contínua** queda
+  el pill **Permisos en voz alta** (check verde o prohibido): si lo apagás, no
+  se dicen los avisos de permiso pendiente ni las respuestas "Permitido una
+  vez / siempre" o "Permiso rechazado".
 - **El texto va al compositor:** al transcribir, se agrega al final de lo que
   ya había escrito (con un espacio si hacía falta) y aparece **"Enviar en Ns"**;
-  si lo tocás o editás el texto, se cancela la cuenta y mandás con Enter cuando
-  quieras. Un clic sin editar no cancela el envío. Si había un borrador, sale
+  tocar ese pill envía de una vez (segundo clic después de "Enviar voz"), mientras
+  que editar el texto cancela la cuenta para que mandes con Enter cuando
+  quieras. Si había un borrador, sale
   completo en el mensaje; si cancelás, el borrador se restaura. Con **Charla
   contínua** prendida, la transcripción y la previsualización en el cuadro
   ocurren **recién cuando hacés una pausa** (3 s de silencio), nunca mientras
@@ -37,7 +43,7 @@ Podés ver el detalle completo de todas las funcionalidades en [`FEATURES.md`](.
   en una sesión local, y **Voz** repite el último mensaje remoto.
 - **Sin solapes:** si se está leyendo otra sesión, el texto remoto corta esa
   lectura antes de empezar; los bloques de una misma sesión se encolan. Al
-  apretar **Dictar** se corta la lectura en curso también en remoto.
+  apretar **Hablar** se corta la lectura en curso también en remoto.
 - **Logs:** `~/.local/share/opencode/log/voz-dictado.log` para transcripciones y
   `~/.local/share/opencode/log/voz-remoto.log` para el diagnóstico de lectura
   remota, la repetición y cada inicio/corte de la cuenta regresiva.
@@ -77,7 +83,7 @@ Podés ver el detalle completo de todas las funcionalidades en [`FEATURES.md`](.
   `say` (voz local de macOS, offline). En `auto` usa `edge` si está instalado.
 
 ### Dictado por voz (STT), VAD y Auto-mic
-- **Botón "Dictar"** con borde rojo bien visible (relleno rojo al presionarlo o
+- **Botón "Hablar"** con borde rojo bien visible (relleno rojo al presionarlo o
   mientras graba) al lado de "Voz" arriba del cuadro de escritura:
   - Corta y bloquea la voz del asistente, pide el micrófono en silencio y suena
     el beep antes de empezar a grabar. No se abre ningún modal: la charla de
@@ -86,8 +92,9 @@ Podés ver el detalle completo de todas las funcionalidades en [`FEATURES.md`](.
     (`████░░░░`) junto a los segundos, más **Pausar / Reanudar**, **Cancelar** y
     **Enviar voz**. `Enter` corta y transcribe al instante.
   - Al transcribir, el texto se agrega al final del compositor con una cuenta
-    regresiva cancelable: tocá el pill **"Enviar en Ns"** para editar tranquilo
-    y mandá con Enter, o esperá a que se envíe solo.
+    regresiva: tocá el pill **"Enviar en Ns"** y se envía de una vez; si editás
+    el texto se cancela la cuenta para que lo mandes con Enter, o esperás a que
+    se envíe solo.
   - Transcribe con **ElevenLabs Scribe v3** o **Groq Whisper**, elegible desde
     **Ajustes > Motor** (automático con respaldo, o uno solo),
     usando vocabulario personalizado desde `~/.config/opencode/voz-vocabulario.md`,
@@ -100,7 +107,7 @@ Podés ver el detalle completo de todas las funcionalidades en [`FEATURES.md`](.
   respuesta (enviando siempre al hilo que respondió, aunque estés mirando otro,
   y salteando la tanda si estás escribiendo con teclado), cierra solo si pasan
   8 segundos sin voz. Al decir **"dejar de escuchar"** o **"deja de escuchar"**
-  con la pill prendida (aunque hayas tocado Dictar), **envía el texto y sigue
+  con la pill prendida (aunque hayas tocado Hablar), **envía el texto y sigue
   escuchando**; con la pill apagada, apaga la Charla contínua con beep largo y
   no envía. En remoto se dispara con el evento local
   `lecturaTerminada` (el plugin no ve los eventos del servidor ajeno, así que
@@ -117,7 +124,7 @@ Podés ver el detalle completo de todas las funcionalidades en [`FEATURES.md`](.
 - `/corregir` o `/corregir lista` — Muestra las palabras guardadas y permite sumar nuevas.
 - Paleta de comandos: **Vocabulario de voz (`/corregir`)**, **Cortar audio de
   otro hilo (`/cortar`)**, **Cambiar voz femenina o masculina**, **Activar o
-  desactivar Auto-mic**, **Dictar mensaje por voz**, **Pausar o seguir la voz**,
+  desactivar Auto-mic**, **Hablar mensaje por voz**, **Pausar o seguir la voz**,
   **Repetir el último mensaje**, **Detener la voz**, **Silenciar o activar la voz**.
 
 ## Estructura
@@ -125,7 +132,7 @@ Podés ver el detalle completo de todas las funcionalidades en [`FEATURES.md`](.
 ```text
 src/index.ts   motor de voz, trabajadores persistentes, eventos, avisos y transcripción (servidor)
 src/rpc.ts     contrato RPC entre la parte gráfica y el servidor
-src/gui.tsx    pills ("Voz", "Dictar", "Auto-mic on/off", "Fem/Masc"), VAD, compositor y comandos (app de escritorio)
+src/gui.tsx    pills ("Voz", "Hablar", "Auto-mic on/off", "Fem/Masc"), VAD, compositor y comandos (app de escritorio)
 assets/        efectos de sonido (beep.wav, staplebops-01.aac, staplebops-02.aac)
 FEATURES.md    descripción completa de todas las funcionalidades del sistema
 ```

@@ -14,6 +14,7 @@ type Estado = {
   motorVoz?: string
   motor?: "auto" | "elevenlabs" | "groq"
   eco?: boolean
+  permisosVoz?: boolean
   concurrencia?: "cortar" | "esperar"
 }
 type EstadoDictado = "libre" | "grabando" | "transcribiendo" | "confirmar"
@@ -35,11 +36,9 @@ const AUTO_MIC_ESTABILIZACION_MS = 500
 const AUTO_MIC_UMBRAL_MIN = 0.009
 const AUTO_MIC_MULTIPLICADOR_RUIDO = 2.1
 const AUTO_MIC_MIN_VOZ_MS = 200
-/** Paciencia del VAD: mínimo 5 s, tope 8 s aunque el ajuste de espera sea mayor. */
-const PACIENCIA_MIN_MS = 5000
-const PACIENCIA_MAX_MS = 8000
-/** Base de la paciencia, con piso de 5 s aunque "Espera para enviar" esté en 3 s. */
-const pacienciaBase = () => Math.max(PACIENCIA_MIN_MS, (leerEsperaSeg() || 3) * 1000)
+/** Paciencia del VAD en Charla contínua: la elige "Espera en charla contínua" en Ajustes. */
+const PACIENCIA_MAX_MS = 20000
+const pacienciaBase = () => (leerEsperaCharlaSeg() || 5) * 1000
 /** El recorder entrega un trozo cada 2 s; así siempre hay audio suficiente para transcribir. */
 const STT_TROZO_MS = 2000
 /** Tramos más cortos que esto no se mandan al STT: audio casi vacío y Groq alucina. */
@@ -50,6 +49,26 @@ const ESPERA_STORAGE_KEY = "opencode-voz.esperaDictado"
 const ESPERA_DEFECTO_SEG = 5
 const ESPERA_MIN_SEG = 1
 const ESPERA_MAX_SEG = 20
+const ESPERA_CHARLA_STORAGE_KEY = "opencode-voz.esperaCharla"
+const ESPERA_CHARLA_DEFECTO_SEG = 5
+
+function leerEsperaCharlaSeg(): number {
+  try {
+    const valor = Number(window.localStorage.getItem(ESPERA_CHARLA_STORAGE_KEY))
+    if (Number.isFinite(valor) && valor >= ESPERA_MIN_SEG && valor <= ESPERA_MAX_SEG) return Math.round(valor)
+  } catch {
+    // ignora si localStorage no está disponible
+  }
+  return ESPERA_CHARLA_DEFECTO_SEG
+}
+
+function guardarEsperaCharlaSeg(valor: number) {
+  try {
+    window.localStorage.setItem(ESPERA_CHARLA_STORAGE_KEY, String(valor))
+  } catch {
+    // ignora si localStorage no está disponible
+  }
+}
 
 function leerEsperaSeg(): number {
   try {
@@ -163,7 +182,7 @@ body:has(.opencode-voz-dictado) [data-slot="dialog-footer"] {
   padding: 5px 2px !important;
   gap: 6px !important;
 }
-/* Dictar: mismo estilo que Escuchar, pero todo en rojo (borde y letra, fondo transparente). */
+/* Hablar: mismo estilo que Escuchar, pero todo en rojo (borde y letra, fondo transparente). */
 button[aria-label="Grabar mensaje de voz y enviarlo"],
 button[title="Grabar mensaje de voz y enviarlo"] {
   background: transparent !important;
@@ -190,7 +209,7 @@ button[title="Frenar la grabación y enviar el mensaje"] {
   border-color: #ef4444 !important;
   color: #fecaca !important;
 }
-/* Escuchar: borde verde e ícono verde, con el mismo hover al 30% que Dictar. */
+/* Escuchar: borde verde e ícono verde, con el mismo hover al 30% que Hablar. */
 button[aria-label^="Reproducir el audio seleccionado"],
 button[title^="Reproducir el audio seleccionado"] {
   background: transparent !important;
@@ -211,7 +230,7 @@ button[title^="Reproducir el audio seleccionado"]:active {
   background: rgba(34, 197, 94, 0.45) !important;
   color: #bbf7d0 !important;
 }
-/* Fondo al 80% en los botones del plugin (Dictar en reposo conserva el suyo).
+/* Fondo al 80% en los botones del plugin (Hablar en reposo conserva el suyo).
    Se prueba tanto title como aria-label porque el host puede exponer cualquiera de los dos. */
 button:is(
   [title^="Reproducir el audio seleccionado"], [aria-label^="Reproducir el audio seleccionado"],
@@ -358,6 +377,7 @@ export default Plugin.define({
       genero: "fem",
       motor: "auto",
       eco: true,
+      permisosVoz: true,
       concurrencia: "cortar",
     })
     const [dictado, setDictado] = createSignal<EstadoDictado>("libre")
@@ -394,6 +414,7 @@ export default Plugin.define({
     let timerPulso: ReturnType<typeof setInterval> | undefined
     let dialogoAbierto = false
     let detenerActivo: (() => void) | undefined
+    let detenerEscuchaActivo: (() => void) | undefined
     let ultimaTeclaEn = 0
 
     const cancelarTimerAutoMic = () => {
@@ -511,6 +532,19 @@ export default Plugin.define({
       setAutoMic(nuevo)
       guardarAutoMic(nuevo)
       if (!nuevo) cancelarTimerAutoMic()
+      enfocarCuadroTexto()
+    }
+
+    /** Igual que decir "dejar de escuchar" con la pill apagada: frena el mic sin enviar. */
+    const pararDictado = async () => {
+      soltarFocoBoton()
+      desactivarAutoMic()
+      if (detenerEscuchaActivo) {
+        detenerEscuchaActivo()
+      } else {
+        void ctx.client.rpc(Voz).sonidoSinVoz({}).catch(() => {})
+        ctx.toast.show({ title: "Charla contínua desactivada", variant: "default" })
+      }
       enfocarCuadroTexto()
     }
 
@@ -839,6 +873,15 @@ export default Plugin.define({
         setEstado((await rpc.alternarEco({}, opts)) as Estado)
       } catch {
         // si el servidor no contesta, no cambia el eco
+      }
+    }
+
+    const alternarPermisosVoz = async (directory?: string, server?: Servidor) => {
+      try {
+        const { rpc, opts } = vozEstado(server ?? sesionActual()?.server, directory)
+        setEstado((await rpc.alternarPermisosVoz({}, opts)) as Estado)
+      } catch {
+        // si el servidor no contesta, no cambia los avisos de permiso
       }
     }
 
@@ -1174,7 +1217,7 @@ export default Plugin.define({
       const session: DestinoDictado | undefined =
         destino ?? (actual ? { id: actual.id, directory: actual.directory, server: actual.server } : undefined)
       if (!session) {
-        if (!modoAuto) ctx.toast.show({ title: "Abrí una charla para dictar", variant: "error" })
+        if (!modoAuto) ctx.toast.show({ title: "Abrí una charla para hablar", variant: "error" })
         return
       }
       if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
@@ -1746,7 +1789,7 @@ export default Plugin.define({
                 if (autoMic()) {
                   // Charla contínua prendida: el silencio no cierra el mic, solo revisa lo
                   // transcripto por si dijeron "dejar de escuchar". Lo decide la pill,
-                  // aunque el dictado se haya abierto tocando Dictar.
+                  // aunque el dictado se haya abierto tocando Hablar.
                   silenceSince = ahora
                   void revisarFrasePorSilencio()
                 } else {
@@ -1787,6 +1830,7 @@ export default Plugin.define({
           cerrado = true
           dialogoAbierto = false
           detenerActivo = undefined
+          detenerEscuchaActivo = undefined
           setControlDictado(undefined)
           detenerTranscripcionParcial()
           vistaPreviaTexto = ""
@@ -1920,6 +1964,7 @@ export default Plugin.define({
         }
 
         detenerActivo = detenerYTranscribir
+        detenerEscuchaActivo = () => apagarEscucha("parar desde Ajustes")
 
         const alEnfocarComposer = (e: FocusEvent) => {
           if (dictado() !== "confirmar") return
@@ -2136,6 +2181,7 @@ export default Plugin.define({
             cerrado = true
             dialogoAbierto = false
             detenerActivo = undefined
+            detenerEscuchaActivo = undefined
             void avisarDictado(false)
             try {
               if (grabadora && grabadora.state !== "inactive") grabadora.stop()
@@ -2468,12 +2514,12 @@ export default Plugin.define({
             label: `Enviar en ${restante}s`,
             icon: "outline-audio",
             tone: "warning",
-            title: "Tocá para cancelar el envío automático y editar el texto",
-            run: () => controlDictado()?.cancelarEnvio(),
+            title: "Tocá para enviar ahora mismo sin esperar la cuenta",
+            run: () => controlDictado()?.enviarAhora(),
           }
         }
         return {
-          label: "Dictar",
+          label: "Hablar",
           icon: ctx.icons.grabar,
           tone: "danger",
           title: "Grabar mensaje de voz y enviarlo",
@@ -2592,6 +2638,7 @@ export default Plugin.define({
         const motor = actual.motor ?? "auto"
         const motorTexto = motor === "elevenlabs" ? "ElevenLabs" : motor === "groq" ? "Groq" : "Auto"
         const ecoActivo = actual.eco !== false
+        const permisosVozActivo = actual.permisosVoz !== false
         const cambiar = (fn: (dir?: string, srv?: Servidor) => Promise<void>) => () => {
           soltarFocoBoton()
           void fn(directory, server)
@@ -2600,11 +2647,11 @@ export default Plugin.define({
         return {
           label: "Ajustes",
           icon: "settings-gear",
-          title: "Ajustes de voz: encender/apagar, Charla contínua, género, motor de lectura, motor de dictado, eco y espera del envío",
+          title: "Ajustes de voz: apagar, Charla contínua, parar dictado, género, motores, eco, permisos y esperas",
           rows: [
             {
               id: "voz-on-off",
-              label: "VOZ PLUGIN",
+              label: "APAGAR VOZ PLUGIN",
               icon: "outline-audio",
               tone: "success",
               detail: "on",
@@ -2617,6 +2664,12 @@ export default Plugin.define({
               tone: autoMic() ? "success" : undefined,
               detail: autoMic() ? "on" : "off",
               run: alternarAutoMic,
+            },
+            {
+              id: "parar-dictado",
+              label: "Parar dictado",
+              icon: "circle-ban-sign",
+              run: cambiar(pararDictado),
             },
             {
               id: "genero",
@@ -2648,6 +2701,14 @@ export default Plugin.define({
               run: cambiar(alternarEco),
             },
             {
+              id: "permisos-voz",
+              label: "Permisos en voz alta",
+              icon: permisosVozActivo ? "outline-audio" : "circle-ban-sign",
+              tone: permisosVozActivo ? "success" : undefined,
+              detail: permisosVozActivo ? "prendido" : "apagado",
+              run: cambiar(alternarPermisosVoz),
+            },
+            {
               id: "espera",
               label: "Espera para enviar",
               icon: "enter",
@@ -2657,6 +2718,18 @@ export default Plugin.define({
                 const actualSeg = leerEsperaSeg()
                 const indice = valores.indexOf(actualSeg)
                 guardarEsperaSeg(valores[(indice + 1) % valores.length] ?? 5)
+              },
+            },
+            {
+              id: "espera-charla",
+              label: "Espera en charla contínua",
+              icon: "enter",
+              detail: `${leerEsperaCharlaSeg()} s`,
+              run: () => {
+                const valores = [2, 3, 5, 10, 20]
+                const actualSeg = leerEsperaCharlaSeg()
+                const indice = valores.indexOf(actualSeg)
+                guardarEsperaCharlaSeg(valores[(indice + 1) % valores.length] ?? 5)
               },
             },
             {
@@ -2694,6 +2767,26 @@ export default Plugin.define({
           title: "Charla contínua prendida: el micrófono se abre solo tras cada respuesta. Clic para apagarla",
           run: () => {
             alternarAutoMic()
+          },
+        }
+      },
+    })
+
+    ctx.add(ComposerPill, {
+      id: "permisos-voz-pill",
+      order: 32,
+      show: (): ComposerPillView | undefined => {
+        if (apagada() || dictado() !== "libre") return undefined
+        const activo = estado().permisosVoz !== false
+        return {
+          label: "Permisos en voz alta",
+          icon: activo ? "circle-check" : "circle-ban-sign",
+          tone: activo ? "success" : undefined,
+          title: activo
+            ? "Los permisos se dicen en voz alta. Clic para silenciarlos"
+            : "Los permisos están silenciados. Clic para volver a decirlos en voz alta",
+          run: () => {
+            void alternarPermisosVoz()
           },
         }
       },
@@ -2749,7 +2842,7 @@ export default Plugin.define({
 
     ctx.add(Command, () => ({
       id: "dictar",
-      title: "Dictar mensaje por voz",
+      title: "Hablar mensaje por voz",
       description: "Graba tu voz y manda el mensaje directo al asistente",
       run: () => {
         alternarDictado()
