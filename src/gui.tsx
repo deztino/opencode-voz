@@ -52,7 +52,7 @@ const ESPERA_MAX_SEG = 20
 const ESPERA_CHARLA_STORAGE_KEY = "opencode-voz.esperaCharla"
 const ESPERA_CHARLA_DEFECTO_SEG = 5
 /** Versión que se muestra en la pill de la derecha (actualizar con package.json). */
-const VERSION_GUI = "0.2.45"
+const VERSION_GUI = "0.2.46"
 
 function leerEsperaCharlaSeg(): number {
   try {
@@ -2897,10 +2897,14 @@ export default Plugin.define({
     ctx.add(ComposerPill, {
       id: "version-pill",
       order: 100,
-      show: (): ComposerPillView | undefined => ({
-        label: `v${VERSION_GUI}`,
-        title: `Plugin de voz v${VERSION_GUI}`,
-      }),
+      show: (): ComposerPillView | undefined => {
+        // Solo en la barra normal: se oculta mientras dictás o hay una transcripción por enviar.
+        if (apagada() || dictado() !== "libre") return undefined
+        return {
+          label: `v${VERSION_GUI}`,
+          title: `Plugin de voz v${VERSION_GUI}`,
+        }
+      },
     })
 
     ctx.add(Command, () => ({
