@@ -46,6 +46,7 @@ const ARCHIVO_TURNO_VOZ = join(tmpdir(), "opencode-tts-turno-voz.json")
 const ARCHIVO_ESTADO_TRABAJANDO = join(tmpdir(), "opencode-tts-trabajando-estado.json")
 const ARCHIVO_ESTADO_GENERO = join(tmpdir(), "opencode-tts-genero-estado.json")
 const ARCHIVO_ESTADO_MOTOR = join(tmpdir(), "opencode-tts-motor-estado.json")
+const ARCHIVO_ESTADO_MOTOR_VOZ = join(tmpdir(), "opencode-tts-motor-voz-estado.json")
 const ARCHIVO_ESTADO_SESIONES_APAGADAS = join(tmpdir(), "opencode-tts-sesiones-apagadas.json")
 const ARCHIVO_ESTADO_ECO_ACTIVO = join(tmpdir(), "opencode-tts-eco-activo-estado.json")
 const ARCHIVO_ESTADO_CONCURRENCIA = join(tmpdir(), "opencode-tts-concurrencia-estado.json")
@@ -86,6 +87,24 @@ function leerEstadoMotor(): MotorStt | undefined {
     if (!existsSync(ARCHIVO_ESTADO_MOTOR)) return undefined
     const data = JSON.parse(readFileSync(ARCHIVO_ESTADO_MOTOR, "utf8")) as { motor?: string }
     return data.motor === "elevenlabs" || data.motor === "groq" || data.motor === "auto" ? data.motor : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function guardarEstadoMotorVoz(motor: "edge" | "say") {
+  try {
+    writeFileSync(ARCHIVO_ESTADO_MOTOR_VOZ, JSON.stringify({ motor, ts: Date.now() }))
+  } catch {
+    // ignora
+  }
+}
+
+function leerEstadoMotorVoz(): "edge" | "say" | undefined {
+  try {
+    if (!existsSync(ARCHIVO_ESTADO_MOTOR_VOZ)) return undefined
+    const data = JSON.parse(readFileSync(ARCHIVO_ESTADO_MOTOR_VOZ, "utf8")) as { motor?: string }
+    return data.motor === "edge" || data.motor === "say" ? data.motor : undefined
   } catch {
     return undefined
   }
@@ -424,7 +443,8 @@ function findEdgePython(): string | undefined {
 const EDGE_PYTHON = findEdgePython()
 
 const ENGINE_PREF = (process.env.OPENCODE_TTS_ENGINE ?? "auto").toLowerCase()
-const ENGINE: "edge" | "say" = ENGINE_PREF === "say" || (ENGINE_PREF === "auto" && !EDGE_BIN) ? "say" : "edge"
+/** Motor de lectura vigente. Se puede cambiar desde Ajustes sin reiniciar. */
+let ENGINE: "edge" | "say" = ENGINE_PREF === "say" || (ENGINE_PREF === "auto" && !EDGE_BIN) ? "say" : "edge"
 
 const EDGE_VOICE_FEM = process.env.OPENCODE_TTS_VOICE ?? "es-MX-DaliaNeural"
 const EDGE_VOICE_MASC = process.env.OPENCODE_TTS_MALE_VOICE ?? "es-HN-CarlosNeural"
@@ -1009,7 +1029,7 @@ function promptParaGroq(terminos: string[]): string | undefined {
 }
 
 /** Versión del plugin que escribe el log (actualizar junto con package.json). */
-const VERSION_LOG = "0.2.32"
+const VERSION_LOG = "0.2.33"
 const RUTA_LOG_DICTADO = join(process.env.HOME ?? tmpdir(), ".local/share/opencode/log/voz-dictado.log")
 const MAX_LINEAS_LOG_DICTADO = 200
 const RUTA_LOG_REMOTO = join(process.env.HOME ?? tmpdir(), ".local/share/opencode/log/voz-remoto.log")
@@ -1413,8 +1433,8 @@ export default Plugin.define({
     }
 
     function precalentar() {
-      if (ENGINE === "edge" && EDGE_PYTHON) asegurarEdgeWorker()
-      if (ENGINE === "edge") {
+      if (motorVozActual() === "edge" && EDGE_PYTHON) asegurarEdgeWorker()
+      if (motorVozActual() === "edge") {
         asegurarPlayerWorker()
         void asegurarAudioAviso("Trabajando.")
         void asegurarAudioAviso("Permiso pendiente.")
@@ -1463,6 +1483,19 @@ export default Plugin.define({
       const compartido = leerEstadoMotor()
       if (compartido && compartido !== motor) motor = compartido
       return motor
+    }
+
+    const savedMotorVoz = await ctx.storage.get("motorVoz")
+    if (savedMotorVoz === "edge" || savedMotorVoz === "say") {
+      if (savedMotorVoz === "say" || EDGE_BIN) ENGINE = savedMotorVoz
+    }
+    const motorVozCompartido = leerEstadoMotorVoz()
+    if (motorVozCompartido && (motorVozCompartido === "say" || EDGE_BIN)) ENGINE = motorVozCompartido
+
+    function motorVozActual(): "edge" | "say" {
+      const compartido = leerEstadoMotorVoz()
+      if (compartido && compartido !== ENGINE && (compartido === "say" || EDGE_BIN)) ENGINE = compartido
+      return ENGINE
     }
 
     let ecoActivo = (await ctx.storage.get("eco")) !== false
@@ -1559,7 +1592,7 @@ export default Plugin.define({
 
     /** Nombre corto de la voz que lee, para mostrar en Ajustes (p. ej. "Edge - Dalia MX"). */
     function vozParaMostrar(): string {
-      if (ENGINE === "say") return `macOS - ${vozSayActual()}`
+      if (motorVozActual() === "say") return `macOS - ${vozSayActual()}`
       const id = vozEdgeActual()
       const partes = id.match(/^es-([a-z]{2})-(.+?)Neural$/i)
       return `Edge - ${partes ? `${partes[2]} ${partes[1].toUpperCase()}` : id}`
@@ -1607,6 +1640,7 @@ export default Plugin.define({
         silenciado: muted,
         genero: generoActual(),
         vozTts: vozParaMostrar(),
+        motorVoz: motorVozActual(),
         motor: motorActual(),
         eco: ecoActual(),
         concurrencia: concurrenciaActual(),
@@ -1926,7 +1960,7 @@ export default Plugin.define({
       // corta cualquier audio huérfano del plugin.
       if (matarHuerfanos && !habiaReproduccion) {
         execFile("pkill", ["-f", TMP_PREFIX], () => {})
-        if (ENGINE === "say") execFile("pkill", ["-x", "say"], () => {})
+        if (motorVozActual() === "say") execFile("pkill", ["-x", "say"], () => {})
       }
     }
 
@@ -2162,7 +2196,7 @@ export default Plugin.define({
       }
 
       // Pre-genera el audio en paralelo mientras suena la oración anterior.
-      const promesaArchivo = ENGINE === "edge" ? sintetizarEdge(text, gen) : undefined
+      const promesaArchivo = motorVozActual() === "edge" ? sintetizarEdge(text, gen) : undefined
       let sintesisContada = Boolean(promesaArchivo)
       if (sintesisContada) cambiarSintetizando(1)
       // Se libera recién cuando empieza a sonar (no cuando está listo el MP3),
@@ -2250,7 +2284,7 @@ export default Plugin.define({
     }
 
     async function asegurarAudioAviso(frase: string): Promise<string | undefined> {
-      if (ENGINE !== "edge" || !EDGE_BIN) return undefined
+      if (motorVozActual() !== "edge" || !EDGE_BIN) return undefined
       const voice = vozEdgeActual()
       const clave = `${voice}::${frase}`
       const existente = cacheAvisos.get(clave)
@@ -2307,7 +2341,7 @@ export default Plugin.define({
       if (!reclamarTurnoTrabajando()) return
       trabajandoEnCola = true
       const gen = generation
-      if (ENGINE === "edge") {
+      if (motorVozActual() === "edge") {
         const clave = `${vozEdgeActual()}::Trabajando.`
         const cached = cacheAvisos.get(clave)
         const listo = cached && existsSync(cached) ? cached : undefined
@@ -2352,7 +2386,7 @@ export default Plugin.define({
         return
       }
       const gen = generation
-      if (ENGINE === "edge") {
+      if (motorVozActual() === "edge") {
         const clave = `${vozEdgeActual()}::${frase}`
         const cached = cacheAvisos.get(clave)
         const listo = cached && existsSync(cached) ? cached : undefined
@@ -2400,7 +2434,7 @@ export default Plugin.define({
       leyendoEcoUsuario = true
       sesionEco = id
       guardarEstadoEco(true)
-      const promesaArchivo = ENGINE === "edge" ? sintetizarEdge(frase, gen, vozEcoEdge) : undefined
+      const promesaArchivo = motorVozActual() === "edge" ? sintetizarEdge(frase, gen, vozEcoEdge) : undefined
 
       queue = queue.then(async () => {
         let sono = false
@@ -2629,10 +2663,21 @@ export default Plugin.define({
           guardarEstadoGenero(genero)
           await ctx.storage.set("genero", genero)
           await ctx.storage.set("voice", vozEdgeActual())
-          if (ENGINE === "edge") {
+          if (motorVozActual() === "edge") {
             void asegurarAudioAviso("Trabajando.")
             void asegurarAudioAviso("Permiso pendiente.")
           }
+          publicar()
+          return estadoActual()
+        },
+        cambiarMotorVoz: async () => {
+          const siguiente = motorVozActual() === "edge" ? "say" : "edge"
+          if (siguiente === "edge" && !EDGE_BIN) return estadoActual()
+          ENGINE = siguiente
+          guardarEstadoMotorVoz(siguiente)
+          await ctx.storage.set("motorVoz", siguiente)
+          stopSpeaking()
+          if (siguiente === "edge") precalentar()
           publicar()
           return estadoActual()
         },

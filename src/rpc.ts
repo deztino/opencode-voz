@@ -19,6 +19,7 @@ const ESTADO = {
     silenciado: { type: "boolean" },
     genero: { type: "string" },
     vozTts: { type: "string" },
+    motorVoz: { type: "string" },
     motor: { type: "string" },
     eco: { type: "boolean" },
     concurrencia: { type: "string" },
@@ -212,6 +213,8 @@ export const Voz = Rpc.define({
     alternar: { input: VACIO, output: ESTADO },
     /** Alterna entre voz femenina y voz masculina. */
     cambiarGenero: { input: VACIO, output: ESTADO },
+    /** Alterna la lectura entre Edge (internet) y la voz local de macOS. */
+    cambiarMotorVoz: { input: VACIO, output: ESTADO },
     /** Rota el motor de dictado entre automático, ElevenLabs y Groq. */
     cambiarMotor: { input: VACIO, output: ESTADO },
     /** Prende o apaga el eco del usuario, "Trabajando." y avisos de herramientas. */

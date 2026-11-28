@@ -11,6 +11,7 @@ type Estado = {
   silenciado: boolean
   genero?: "fem" | "masc"
   vozTts?: string
+  motorVoz?: string
   motor?: "auto" | "elevenlabs" | "groq"
   eco?: boolean
   concurrencia?: "cortar" | "esperar"
@@ -2587,7 +2588,7 @@ export default Plugin.define({
         return {
           label: "Ajustes",
           icon: "settings-gear",
-          title: "Ajustes de voz: encender/apagar, Charla contínua, género, motor, eco y espera del envío",
+          title: "Ajustes de voz: encender/apagar, Charla contínua, género, motor de lectura, motor de dictado, eco y espera del envío",
           rows: [
             {
               id: "voz-on-off",
@@ -2613,8 +2614,15 @@ export default Plugin.define({
               run: cambiar(cambiarGenero),
             },
             {
+              id: "motor-voz",
+              label: "Motor de lectura",
+              icon: "outline-audio",
+              detail: actual.motorVoz === "edge" ? "Edge" : "macOS",
+              run: cambiar(cambiarMotorVoz),
+            },
+            {
               id: "motor",
-              label: "Motor",
+              label: "Motor de dictado",
               icon: "outline-audio",
               detail: motorTexto,
               run: cambiar(cambiarMotor),
