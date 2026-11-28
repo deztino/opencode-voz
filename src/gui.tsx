@@ -10,6 +10,7 @@ type Estado = {
   pausado: boolean
   silenciado: boolean
   genero?: "fem" | "masc"
+  vozTts?: string
   motor?: "auto" | "elevenlabs" | "groq"
   eco?: boolean
   concurrencia?: "cortar" | "esperar"
@@ -2608,7 +2609,7 @@ export default Plugin.define({
               id: "genero",
               label: "Voz",
               icon: "outline-audio",
-              detail: esMasc ? "masculina" : "femenina",
+              detail: actual.vozTts ?? (esMasc ? "masculina" : "femenina"),
               run: cambiar(cambiarGenero),
             },
             {

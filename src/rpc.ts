@@ -7,7 +7,7 @@ const VACIO = {
   additionalProperties: false,
 } as const
 
-/** Estado de la voz: si está hablando, si el audio está encolado pero todavía no suena, si está en pausa, si está silenciada, el género de voz, el motor de dictado, si el eco está prendido y el modo entre sesiones. */
+/** Estado de la voz: si está hablando, si el audio está encolado pero todavía no suena, si está en pausa, si está silenciada, el género y la voz de lectura, el motor de dictado, si el eco está prendido y el modo entre sesiones. */
 const ESTADO = {
   type: "object",
   properties: {
@@ -18,6 +18,7 @@ const ESTADO = {
     pausado: { type: "boolean" },
     silenciado: { type: "boolean" },
     genero: { type: "string" },
+    vozTts: { type: "string" },
     motor: { type: "string" },
     eco: { type: "boolean" },
     concurrencia: { type: "string" },

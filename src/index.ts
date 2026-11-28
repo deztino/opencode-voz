@@ -1009,7 +1009,7 @@ function promptParaGroq(terminos: string[]): string | undefined {
 }
 
 /** Versión del plugin que escribe el log (actualizar junto con package.json). */
-const VERSION_LOG = "0.2.31"
+const VERSION_LOG = "0.2.32"
 const RUTA_LOG_DICTADO = join(process.env.HOME ?? tmpdir(), ".local/share/opencode/log/voz-dictado.log")
 const MAX_LINEAS_LOG_DICTADO = 200
 const RUTA_LOG_REMOTO = join(process.env.HOME ?? tmpdir(), ".local/share/opencode/log/voz-remoto.log")
@@ -1557,6 +1557,14 @@ export default Plugin.define({
       return generoActual() === "masc" ? SAY_VOICE_MASC : SAY_VOICE_FEM
     }
 
+    /** Nombre corto de la voz que lee, para mostrar en Ajustes (p. ej. "Edge - Dalia MX"). */
+    function vozParaMostrar(): string {
+      if (ENGINE === "say") return `macOS - ${vozSayActual()}`
+      const id = vozEdgeActual()
+      const partes = id.match(/^es-([a-z]{2})-(.+?)Neural$/i)
+      return `Edge - ${partes ? `${partes[2]} ${partes[1].toUpperCase()}` : id}`
+    }
+
     let avisar:
       | ((estado: {
           hablando: boolean
@@ -1598,6 +1606,7 @@ export default Plugin.define({
         pausado,
         silenciado: muted,
         genero: generoActual(),
+        vozTts: vozParaMostrar(),
         motor: motorActual(),
         eco: ecoActual(),
         concurrencia: concurrenciaActual(),
